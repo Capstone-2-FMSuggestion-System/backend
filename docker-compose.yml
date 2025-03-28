@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql+pymysql://family_user:your_password@db/family_menu_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-secret-key-for-jwt
+      - ZALOPAY_APP_ID=2553
+      - ZALOPAY_KEY1=PcY4iZIKFCIdgZvA6ueMcMHHUbRLYjPL
+      - ZALOPAY_KEY2=kLtgPl8HHhfvMuDHPwKfgfsY4Ydm9eIz
+      - ZALOPAY_CREATE_ORDER_URL=https://sb-openapi.zalopay.vn/v2/create
+      - ZALOPAY_QUERY_URL=https://sb-openapi.zalopay.vn/v2/query
+      - ZALOPAY_CALLBACK_URL=http://your-domain/api/payments/callback
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+    restart: always
+
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_DATABASE=family_menu_db
+      - MYSQL_USER=family_user
+      - MYSQL_PASSWORD=your_password
+      - MYSQL_ROOT_PASSWORD=root_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: always
+
+  redis:
+    image: redis:6.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+
+volumes:
+  mysql_data:
+  redis_data: 
