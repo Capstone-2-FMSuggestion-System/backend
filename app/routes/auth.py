@@ -7,6 +7,8 @@ from ..schemas import UserCreate, Login
 from ..crud import get_user_by_username, get_user_by_email, create_user
 from ..security import verify_password
 from datetime import timedelta
+from ..cache import get_cache, set_cache
+import json
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -44,3 +46,30 @@ async def login(login_data: Login, db: Session = Depends(get_db)):
         "user_id": user.user_id,
         "role": user.role
     } 
+
+@router.get("/me", response_model=dict)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    # Tạo cache key dựa trên user_id
+    cache_key = f"user_info:{current_user.user_id}"
+    
+    # Kiểm tra xem thông tin đã được cache chưa
+    cached_data = await get_cache(cache_key)
+    if cached_data:
+        return json.loads(cached_data)
+    
+    # Nếu chưa có trong cache, lấy thông tin từ database
+    user_data = {
+        "user_id": current_user.user_id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "role": current_user.role,
+        "location": current_user.location,
+        "preferences": current_user.preferences
+    }
+    
+    # Lưu vào cache với thời gian hết hạn là 15 phút
+    await set_cache(cache_key, json.dumps(user_data), 900)
+    
+    return user_data
+
