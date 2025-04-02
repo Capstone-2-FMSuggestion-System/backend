@@ -88,11 +88,9 @@ __pycache__/
 *.key
 
 # Project specific
-chatbot.md
-update_chatbot.md
-zalo_pay.md
-huong_dan.md
-zalopay_integration.md
+# Exclude all markdown files except README.md
+*.md
+!README.md
 
 # Large data files
 # Uncomment if you don't want to track PDF files
