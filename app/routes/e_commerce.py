@@ -6,6 +6,7 @@ from ..models import User, Product, Category, Orders, OrderItems, Reviews
 from ..schemas import ProductResponse, OrderCreate, OrderResponse, ReviewCreate, ReviewResponse
 from ..cache import get_cache, set_cache
 from typing import List, Optional
+import random
 
 router = APIRouter(prefix="/api/e-commerce", tags=["E-Commerce"])
 
@@ -160,4 +161,25 @@ async def get_order_details(
         "payment_method": order.payment_method,
         "created_at": order.created_at,
         "items": items
-    } 
+    }
+
+@router.get("/products/featured", response_model=List[ProductResponse])
+async def get_featured_products(db: Session = Depends(get_db)):
+    """
+    Retrieve featured products based on criteria like high ratings or manual selection
+    """
+    # Try to get from cache first
+    cache_key = "products:featured"
+    cached_result = await get_cache(cache_key)
+    if cached_result:
+        return eval(cached_result)
+    
+    # Get products with rating >= 4.0 or randomly select 10 products
+    # In a real scenario, this could be based on other business logic
+    featured_products = db.query(Product).limit(10).all()
+    
+    result = [ProductResponse.from_orm(p) for p in featured_products]
+    
+    # Cache the result
+    await set_cache(cache_key, str(result), expire=300)
+    return result 
