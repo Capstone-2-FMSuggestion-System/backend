@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -140,4 +140,44 @@ class ZaloPayOrderResponse(BaseModel):
 class ZaloPayCallback(BaseModel):
     data: str
     mac: str
-    type: int 
+    type: int
+
+class CategoryBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    level: int
+    parent_id: Optional[int] = None
+
+class CategoryResponse(CategoryBase):
+    category_id: int
+
+    class Config:
+        from_attributes = True
+
+class CategoryWithSubcategories(CategoryResponse):
+    subcategories: List["CategoryWithSubcategories"] = []
+
+    class Config:
+        from_attributes = True
+
+CategoryWithSubcategories.model_rebuild()
+
+class ProductDiscountResponse(BaseModel):
+    product_id: int
+    name: str
+    original_price: float
+    discount_price: float
+    discount_percent: float
+    image_url: Optional[str]
+    category_id: int
+
+    class Config:
+        from_attributes = True
+
+class MainCategoryResponse(BaseModel):
+    category_id: int
+    name: str
+    level: int
+    
+    class Config:
+        from_attributes = True 
