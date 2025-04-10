@@ -1,10 +1,14 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-# from .routes import auth, payment, user, inventory, admin, e_commerce, chatbot
-from .routes import auth, payment, user, inventory, admin, e_commerce
-from .database import engine
-from .models import Base
+# from .auth import router as auth_router, payment, user, inventory, admin, e_commerce, chatbot
+from .auth import router as auth_router
+from .admin import router as admin_router
+from .user import router as user_router
+from .inventory import router as inventory_router
+from .payment import router as payment_router
+from .e_commerce import router as e_commerce_router
+from .core.database import engine, Base
 import logging
 from typing import Union
 
@@ -49,12 +53,12 @@ def health_check():
     return {"status": "healthy"}
 
 # Include routers
-app.include_router(auth.router)
-app.include_router(payment.router)
-app.include_router(user.router)
-app.include_router(inventory.router)
-app.include_router(admin.router)
-app.include_router(e_commerce.router)
+app.include_router(auth_router)
+app.include_router(payment_router)
+app.include_router(user_router)
+app.include_router(inventory_router)
+app.include_router(admin_router)
+app.include_router(e_commerce_router)
 # app.include_router(chatbot.router)
 
 if __name__ == "__main__":

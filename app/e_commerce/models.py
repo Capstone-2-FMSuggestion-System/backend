@@ -1,18 +1,11 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, Boolean, JSON, text
-from sqlalchemy.orm import relationship
-from .database import Base
+# Đây là file models.py cho module e_commerce
 
-class User(Base):
-    __tablename__ = "users"
-    user_id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)
-    email = Column(String(100), unique=True, nullable=False)
-    full_name = Column(String(100))
-    preferences = Column(JSON)
-    location = Column(String(100))
-    role = Column(String(20), default="user")
-    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, Boolean, text
+from sqlalchemy.orm import relationship
+from ..core.database import Base
+
+# Import User model từ module user để sử dụng cho ForeignKey
+from ..user.models import User
 
 class Category(Base):
     __tablename__ = "categories"
@@ -61,22 +54,6 @@ class OrderItems(Base):
     quantity = Column(Integer, nullable=False)
     price = Column(DECIMAL(10, 2), nullable=False)
 
-class Inventory(Base):
-    __tablename__ = "inventory"
-    inventory_id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
-    quantity = Column(Integer, default=0)
-    unit = Column(String(20))
-    last_updated = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-class InventoryTransactions(Base):
-    __tablename__ = "inventory_transactions"
-    transaction_id = Column(Integer, primary_key=True, index=True)
-    inventory_id = Column(Integer, ForeignKey("inventory.inventory_id"), nullable=False)
-    type = Column(String(20), nullable=False)
-    quantity = Column(Integer, nullable=False)
-    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
-
 class Menus(Base):
     __tablename__ = "menus"
     menu_id = Column(Integer, primary_key=True, index=True)
@@ -114,13 +91,3 @@ class Promotions(Base):
     start_date = Column(TIMESTAMP)
     end_date = Column(TIMESTAMP)
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
-
-class Payments(Base):
-    __tablename__ = "payments"
-    payment_id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.order_id"), nullable=False)
-    amount = Column(DECIMAL(10, 2), nullable=False)
-    method = Column(String(50))
-    status = Column(String(20), default="pending")
-    zp_trans_id = Column(String(50), nullable=True)
-    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP")) 

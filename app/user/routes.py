@@ -1,13 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from ...core.database import get_db
-from ...core.auth import get_current_user
-from ...user.models import User
-from ...e_commerce.models import Product
-from ...e_commerce.crud import get_products, get_product, create_cart_item, get_cart_item, update_cart_item, delete_cart_item
-from ...e_commerce.schemas import ProductResponse, CartItem, OrderCreate, OrderResponse, ReviewCreate, ReviewResponse
-from ...user.schemas import UserUpdate
-from ...core.cache import get_cache, set_cache, redis_client
+from ..core.database import get_db
+from ..core.auth import get_current_user
+from .models import User
+from .schemas import UserUpdate
+from .crud import get_user_by_username, get_user, create_user, update_user, delete_user, get_users
+
+# Import từ module e_commerce
+from ..e_commerce.models import Product, CartItems, Orders, OrderItems 
+from ..e_commerce.schemas import ProductResponse, CartItem, OrderCreate, OrderResponse
+from ..e_commerce.crud import get_products, get_product, create_cart_item, get_cart_item, update_cart_item, delete_cart_item
+
+# Import các module khác cần thiết
+from ..core.cache import get_cache, set_cache, redis_client
 from typing import List
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
@@ -91,7 +96,8 @@ async def add_to_cart(
     if not product or item.quantity <= 0 or item.quantity > product.stock_quantity:
         raise HTTPException(status_code=400, detail="Invalid quantity or product")
     
-    cart_item = create_cart_item(db, current_user.user_id, item.product_id, item.quantity)
+    # Tạo cart_item với chính xác số lượng tham số theo định nghĩa hàm
+    cart_item = create_cart_item(db, user_id=current_user.user_id, cart_item=item)
     
     # Xóa cache giỏ hàng khi thêm sản phẩm mới
     cache_key = f"user_cart:{current_user.user_id}"
@@ -100,14 +106,15 @@ async def add_to_cart(
     return {"message": "Item added to cart", "cart_item_id": cart_item.cart_item_id}
 
 @router.put("/cart/{cart_item_id}", response_model=dict)
-async def update_cart_item(
+async def update_cart_item_route(
     cart_item_id: int,
     quantity: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    cart_item = get_cart_item(db, cart_item_id, current_user.user_id)
-    if not cart_item:
+    # Lấy cart_item với chính xác số lượng tham số theo định nghĩa hàm
+    cart_item = get_cart_item(db, cart_item_id)
+    if not cart_item or cart_item.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="Cart item not found")
     
     product = get_product(db, cart_item.product_id)
@@ -128,8 +135,9 @@ async def remove_from_cart(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    cart_item = get_cart_item(db, cart_item_id, current_user.user_id)
-    if not cart_item:
+    # Lấy cart_item với chính xác số lượng tham số theo định nghĩa hàm
+    cart_item = get_cart_item(db, cart_item_id)
+    if not cart_item or cart_item.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="Cart item not found")
     
     delete_cart_item(db, cart_item_id)

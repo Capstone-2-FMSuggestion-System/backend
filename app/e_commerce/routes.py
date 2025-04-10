@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from ...core.database import get_db
-from ...core.auth import get_current_user
-from ...user.models import User
-from ...e_commerce.models import Product, Category, Orders, OrderItems, Reviews
-from ...e_commerce.schemas import (
+from ..core.database import get_db
+from ..core.auth import get_current_user
+from .models import Product, Category, Orders, OrderItems, Reviews
+from ..user.models import User
+from .schemas import (
     ProductResponse, OrderCreate, OrderResponse, ReviewCreate, ReviewResponse, 
     CategoryResponse, CategoryWithSubcategories, ProductDiscountResponse, 
     MainCategoryResponse
 )
-from ...core.cache import get_cache, set_cache
+from ..core.cache import get_cache, set_cache
 from typing import List, Optional
 import random
 import json

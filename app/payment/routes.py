@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from ...core.database import get_db
-from ...core.auth import get_current_user
-from ...payment.models import Payments
-from ...e_commerce.models import Orders, Product
-from ...e_commerce.crud import create_order, update_order_status
-from ...payment.crud import create_payment, update_payment_status
-from ...e_commerce.schemas import OrderCreate
-from ...payment.schemas import ZaloPayOrderResponse, ZaloPayCallback, PaymentCreate, PaymentMethod
-from ...payment import zalopay
+from ..core.database import get_db
+from ..core.auth import get_current_user
+from .models import User, Orders, Payments
+from ..e_commerce.models import Product
+from ..e_commerce.schemas import OrderCreate
+from .schemas import ZaloPayOrderResponse, ZaloPayCallback, PaymentCreate, PaymentMethod
+from .crud import create_payment, update_payment_status
+from ..e_commerce.crud import create_order, update_order_status
+from . import zalopay
 import json
 import ipaddress
 import random

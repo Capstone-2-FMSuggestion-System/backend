@@ -3,8 +3,8 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from .database import get_db
-from .models import User
-from .crud import get_user_by_username
+from ..user.models import User
+from ..user.crud import get_user_by_username
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 import os
@@ -83,4 +83,31 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = get_user_by_username(db, payload.get("username"))
     if not user:
         raise credentials_exception
-    return user 
+    return user
+
+def get_current_active_user(current_user = Depends(get_current_user)):
+    """
+    Tên Function: get_current_active_user
+    
+    1. Mô tả ngắn gọn:
+    Xác thực người dùng hiện tại đang active.
+    
+    2. Mô tả công dụng:
+    Kiểm tra xem người dùng hiện tại có đang active không.
+    Sử dụng như một dependency để đảm bảo chỉ người dùng active mới có thể truy cập các endpoint.
+    
+    3. Các tham số đầu vào:
+    - current_user (User): Đối tượng User từ get_current_user
+    
+    4. Giá trị trả về:
+    - User: Đối tượng User nếu người dùng đang active
+    - HTTPException: Nếu người dùng không active
+    
+    5. Ví dụ sử dụng:
+    >>> @app.get("/users/me/items")
+    >>> def read_user_items(current_user: User = Depends(get_current_active_user)):
+    >>>     return current_user.items
+    """
+    if current_user.is_active is False:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user 
