@@ -88,6 +88,11 @@ async def logout(current_user: User = Depends(get_current_user)):
 
 @router.get("/me", response_model=dict)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """
+    Legacy endpoint cho việc lấy thông tin người dùng hiện tại.
+    Giữ lại để đảm bảo tính tương thích với frontend hiện tại.
+    Trong tương lai, nên dùng /api/users/me.
+    """
     try:
         # Tạo cache key dựa trên user_id
         cache_key = f"user_info:{current_user.user_id}"
@@ -122,50 +127,5 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving user information: {str(e)}"
-        )
-
-@router.put("/profile", response_model=dict)
-async def update_profile(
-    user_update: UserUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    try:
-        # Chỉ cập nhật các trường cho phép
-        update_data = user_update.dict(exclude_unset=True)
-        
-        # Không cho phép thay đổi role từ endpoint này
-        if "role" in update_data:
-            del update_data["role"]
-        
-        # Cập nhật từng trường
-        for field, value in update_data.items():
-            setattr(current_user, field, value)
-        
-        # Commit thay đổi vào database
-        db.commit()
-        
-        # Xóa cache thông tin người dùng
-        cache_key = f"user_info:{current_user.user_id}"
-        await redis_client.delete(cache_key)
-        
-        # Trả về thông tin người dùng đã cập nhật
-        user_data = {
-            "user_id": current_user.user_id,
-            "username": current_user.username,
-            "email": current_user.email,
-            "full_name": current_user.full_name,
-            "avatar_url": current_user.avatar_url,
-            "role": current_user.role,
-            "status": current_user.status,
-            "location": current_user.location,
-            "created_at": current_user.created_at.isoformat() if current_user.created_at else None
-        }
-        
-        return user_data
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating user profile: {str(e)}"
         )
 

@@ -37,8 +37,15 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "full_name": current_user.full_name,
         "avatar_url": current_user.avatar_url,
-        "role": current_user.role
+        "role": current_user.role,
+        "status": current_user.status,
+        "location": current_user.location,
+        "preferences": current_user.preferences,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
     }
+    
+    # Lọc bỏ các giá trị None
+    user_data = {k: v for k, v in user_data.items() if v is not None}
     
     # Lưu vào cache với thời gian hết hạn là 15 phút
     await set_cache(cache_key, str(user_data), 900)
@@ -51,15 +58,48 @@ async def update_user_info(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    for field, value in user_update.dict(exclude_unset=True).items():
-        setattr(current_user, field, value)
-    db.commit()
-    
-    # Xóa cache thông tin người dùng khi cập nhật thông tin
-    cache_key = f"user_info:{current_user.user_id}"
-    await redis_client.delete(cache_key)
-    
-    return {"message": "User information updated successfully"}
+    """
+    Endpoint duy nhất để cập nhật thông tin người dùng.
+    Trước đây có endpoint /profile nhưng đã được gộp vào endpoint này.
+    """
+    try:
+        # Chỉ cập nhật các trường cho phép
+        update_data = user_update.dict(exclude_unset=True)
+        
+        # Không cho phép thay đổi role từ endpoint này
+        if "role" in update_data:
+            del update_data["role"]
+        
+        # Cập nhật từng trường
+        for field, value in update_data.items():
+            setattr(current_user, field, value)
+        
+        # Commit thay đổi vào database
+        db.commit()
+        
+        # Xóa cache thông tin người dùng
+        cache_key = f"user_info:{current_user.user_id}"
+        await redis_client.delete(cache_key)
+        
+        # Trả về thông tin người dùng đã cập nhật
+        user_data = {
+            "user_id": current_user.user_id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "avatar_url": current_user.avatar_url,
+            "role": current_user.role,
+            "status": current_user.status,
+            "location": current_user.location,
+            "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+        }
+        
+        return {"message": "User information updated successfully", "user": user_data}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating user information: {str(e)}"
+        )
 
 @router.post("/me/avatar", response_model=dict)
 async def update_user_avatar(
