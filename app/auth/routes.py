@@ -7,7 +7,8 @@ from .schemas import UserCreate, Login
 from ..user.crud import get_user_by_username, get_user_by_email, create_user
 from ..core.security import verify_password
 from datetime import timedelta
-from ..core.cache import get_cache, set_cache
+from ..core.cache import get_cache, set_cache, redis_client
+from ..user.schemas import UserUpdate
 import json
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -29,13 +30,29 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login")
 async def login(login_data: Login, db: Session = Depends(get_db)):
-    user = get_user_by_username(db, login_data.username)
+    # Kiểm tra xem đầu vào là email hay username
+    if "@" in login_data.username_or_email:
+        # Nếu là email
+        user = get_user_by_email(db, login_data.username_or_email)
+    else:
+        # Nếu là username
+        user = get_user_by_username(db, login_data.username_or_email)
+    
     if not user or not verify_password(login_data.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+        
+    # Kiểm tra trạng thái người dùng
+    if user.status == "blocked":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been blocked. Please contact administrator.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
     access_token = create_access_token(
         {"user_id": user.user_id, "username": user.username, "role": user.role},
         timedelta(minutes=30)
@@ -45,31 +62,110 @@ async def login(login_data: Login, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user_id": user.user_id,
         "role": user.role
-    } 
+    }
+
+@router.post("/logout", response_model=dict)
+async def logout(current_user: User = Depends(get_current_user)):
+    try:
+        # Xóa cache thông tin người dùng
+        cache_key = f"user_info:{current_user.user_id}"
+        await redis_client.delete(cache_key)
+        
+        # Xóa các cache liên quan đến người dùng
+        cart_cache_key = f"user_cart:{current_user.user_id}"
+        location_cache_key = f"user_location:{current_user.user_id}"
+        chat_history_cache_key = f"user_chat_history:{current_user.user_id}"
+        
+        await redis_client.delete(cart_cache_key)
+        await redis_client.delete(location_cache_key)
+        await redis_client.delete(chat_history_cache_key)
+        
+        return {"message": "Logged out successfully and cleared user cache"}
+    except Exception as e:
+        # Log lỗi nhưng vẫn xác nhận logout thành công
+        print(f"Error clearing cache on logout: {str(e)}")
+        return {"message": "Logged out successfully"}
 
 @router.get("/me", response_model=dict)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
-    # Tạo cache key dựa trên user_id
-    cache_key = f"user_info:{current_user.user_id}"
-    
-    # Kiểm tra xem thông tin đã được cache chưa
-    cached_data = await get_cache(cache_key)
-    if cached_data:
-        return json.loads(cached_data)
-    
-    # Nếu chưa có trong cache, lấy thông tin từ database
-    user_data = {
-        "user_id": current_user.user_id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "role": current_user.role,
-        "location": current_user.location,
-        "preferences": current_user.preferences
-    }
-    
-    # Lưu vào cache với thời gian hết hạn là 15 phút
-    await set_cache(cache_key, json.dumps(user_data), 900)
-    
-    return user_data
+    try:
+        # Tạo cache key dựa trên user_id
+        cache_key = f"user_info:{current_user.user_id}"
+        
+        # Kiểm tra xem thông tin đã được cache chưa
+        cached_data = await get_cache(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+        
+        # Nếu chưa có trong cache, lấy thông tin từ database
+        user_data = {
+            "user_id": current_user.user_id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "avatar_url": current_user.avatar_url,
+            "role": current_user.role,
+            "status": current_user.status,
+            "location": current_user.location,
+            "preferences": current_user.preferences,
+            "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+        }
+        
+        # Lọc bỏ các giá trị None
+        user_data = {k: v for k, v in user_data.items() if v is not None}
+        
+        # Lưu vào cache với thời gian hết hạn là 15 phút
+        await set_cache(cache_key, json.dumps(user_data), 900)
+        
+        return user_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving user information: {str(e)}"
+        )
+
+@router.put("/profile", response_model=dict)
+async def update_profile(
+    user_update: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Chỉ cập nhật các trường cho phép
+        update_data = user_update.dict(exclude_unset=True)
+        
+        # Không cho phép thay đổi role từ endpoint này
+        if "role" in update_data:
+            del update_data["role"]
+        
+        # Cập nhật từng trường
+        for field, value in update_data.items():
+            setattr(current_user, field, value)
+        
+        # Commit thay đổi vào database
+        db.commit()
+        
+        # Xóa cache thông tin người dùng
+        cache_key = f"user_info:{current_user.user_id}"
+        await redis_client.delete(cache_key)
+        
+        # Trả về thông tin người dùng đã cập nhật
+        user_data = {
+            "user_id": current_user.user_id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "avatar_url": current_user.avatar_url,
+            "role": current_user.role,
+            "status": current_user.status,
+            "location": current_user.location,
+            "created_at": current_user.created_at.isoformat() if current_user.created_at else None
+        }
+        
+        return user_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating user profile: {str(e)}"
+        )
 

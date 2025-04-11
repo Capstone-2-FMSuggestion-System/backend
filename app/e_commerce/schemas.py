@@ -32,25 +32,44 @@ class MainCategoryResponse(CategoryResponse):
     class Config:
         from_attributes = True
 
+class ProductImageBase(BaseModel):
+    image_url: str
+    is_primary: Optional[bool] = False
+    display_order: Optional[int] = 0
+
+class ProductImageCreate(ProductImageBase):
+    product_id: int
+
+class ProductImageUpdate(BaseModel):
+    image_url: Optional[str] = None
+    is_primary: Optional[bool] = None
+    display_order: Optional[int] = None
+
+class ProductImageResponse(ProductImageBase):
+    image_id: int
+    product_id: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class ProductBase(BaseModel):
     name: str
     description: Optional[str] = None
     price: float
     category_id: int
-    image_url: Optional[str] = None
     unit: Optional[str] = None
     stock_quantity: Optional[int] = 0
     is_featured: Optional[bool] = False
 
 class ProductCreate(ProductBase):
-    pass
+    images: Optional[List[ProductImageBase]] = []
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
     category_id: Optional[int] = None
-    image_url: Optional[str] = None
     unit: Optional[str] = None
     stock_quantity: Optional[int] = None
     is_featured: Optional[bool] = None
@@ -58,6 +77,7 @@ class ProductUpdate(BaseModel):
 class ProductResponse(ProductBase):
     product_id: int
     created_at: datetime
+    images: List[ProductImageResponse] = []
     
     class Config:
         from_attributes = True

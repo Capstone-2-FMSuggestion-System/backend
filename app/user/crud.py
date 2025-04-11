@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from .models import User
-from .schemas import UserCreate, UserUpdate
+from .schemas import UserCreate, UserUpdate, UserSearchFilter
 from ..core.security import hash_password
+from sqlalchemy import or_
 
 def get_user_by_username(db: Session, username: str) -> Optional[User]:
     """
@@ -212,4 +213,52 @@ def get_users(db: Session, skip: int = 0, limit: int = 100):
     4. Giá trị trả về:
     - List[User]: Danh sách các đối tượng User
     """
-    return db.query(User).offset(skip).limit(limit).all() 
+    return db.query(User).offset(skip).limit(limit).all()
+
+def search_users(db: Session, search_params: UserSearchFilter, skip: int = 0, limit: int = 100):
+    """
+    Tên Function: search_users
+    
+    1. Mô tả ngắn gọn:
+    Tìm kiếm người dùng theo tên, vai trò và trạng thái.
+    
+    2. Mô tả công dụng:
+    Truy vấn cơ sở dữ liệu để tìm kiếm người dùng theo các điều kiện như tên, vai trò
+    và trạng thái. Hỗ trợ phân trang thông qua các tham số skip và limit.
+    
+    3. Các tham số đầu vào:
+    - db (Session): Phiên làm việc với database
+    - search_params (UserSearchFilter): Các tham số tìm kiếm
+    - skip (int): Số lượng bản ghi bỏ qua (mặc định: 0)
+    - limit (int): Số lượng bản ghi tối đa trả về (mặc định: 100)
+    
+    4. Giá trị trả về:
+    - Tuple[List[User], int]: Danh sách các đối tượng User thỏa mãn điều kiện và tổng số
+    """
+    # Bắt đầu xây dựng truy vấn
+    query = db.query(User)
+    
+    # Lọc theo tên (tìm kiếm trong username và full_name)
+    if search_params.name:
+        query = query.filter(
+            or_(
+                User.username.ilike(f"%{search_params.name}%"),
+                User.full_name.ilike(f"%{search_params.name}%")
+            )
+        )
+    
+    # Lọc theo vai trò
+    if search_params.role:
+        query = query.filter(User.role == search_params.role)
+    
+    # Lọc theo trạng thái
+    if search_params.status:
+        query = query.filter(User.status == search_params.status)
+    
+    # Đếm tổng số bản ghi
+    total = query.count()
+    
+    # Thực hiện phân trang
+    users = query.offset(skip).limit(limit).all()
+    
+    return users, total 

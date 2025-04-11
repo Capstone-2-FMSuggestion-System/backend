@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
 from .models import User
-from .schemas import UserUpdate
+from .schemas import UserUpdate, AvatarUpdate
 from .crud import get_user_by_username, get_user, create_user, update_user, delete_user, get_users
 
 # Import từ module e_commerce
@@ -13,7 +13,10 @@ from ..e_commerce.crud import get_products, get_product, create_cart_item, get_c
 
 # Import các module khác cần thiết
 from ..core.cache import get_cache, set_cache, redis_client
+from ..core.cloudinary_utils import upload_image, delete_image
 from typing import List
+import os
+import re
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
@@ -33,6 +36,7 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         "username": current_user.username,
         "email": current_user.email,
         "full_name": current_user.full_name,
+        "avatar_url": current_user.avatar_url,
         "role": current_user.role
     }
     
@@ -56,6 +60,56 @@ async def update_user_info(
     await redis_client.delete(cache_key)
     
     return {"message": "User information updated successfully"}
+
+@router.post("/me/avatar", response_model=dict)
+async def update_user_avatar(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Kiểm tra định dạng file
+    allowed_extensions = ["jpg", "jpeg", "png", "gif", "webp"]
+    file_extension = file.filename.split(".")[-1].lower()
+    
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File phải có định dạng: {', '.join(allowed_extensions)}"
+        )
+    
+    # Xóa avatar cũ nếu có
+    if current_user.avatar_url:
+        # Lấy public_id từ URL
+        match = re.search(r'data_fm/([^/]+)', current_user.avatar_url)
+        if match:
+            old_public_id = f"data_fm/{match.group(1).split('.')[0]}"
+            try:
+                await delete_image(old_public_id)
+            except Exception as e:
+                # Log lỗi nhưng vẫn tiếp tục tải lên avatar mới
+                print(f"Không thể xóa avatar cũ: {e}")
+    
+    # Tải lên avatar mới
+    try:
+        upload_result = await upload_image(file, folder="data_fm")
+        
+        # Cập nhật URL avatar trong database
+        current_user.avatar_url = upload_result["url"]
+        db.commit()
+        
+        # Xóa cache thông tin người dùng
+        cache_key = f"user_info:{current_user.user_id}"
+        await redis_client.delete(cache_key)
+        
+        return {
+            "message": "Avatar updated successfully",
+            "avatar_url": upload_result["url"]
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload avatar: {str(e)}"
+        )
 
 @router.get("/cart", response_model=List[dict])
 async def get_cart_items(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

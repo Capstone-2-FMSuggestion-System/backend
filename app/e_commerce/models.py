@@ -22,11 +22,25 @@ class Product(Base):
     name = Column(String(100), nullable=False)
     description = Column(String(1000))
     price = Column(DECIMAL(10, 2), nullable=False)
-    image_url = Column(String(255))
     unit = Column(String(20))
     stock_quantity = Column(Integer, default=0)
     is_featured = Column(Boolean, default=False)
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    
+    # Mối quan hệ với ProductImages
+    images = relationship("ProductImages", back_populates="product")
+
+class ProductImages(Base):
+    __tablename__ = "product_images"
+    image_id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
+    image_url = Column(String(255), nullable=False)
+    is_primary = Column(Boolean, default=False)
+    display_order = Column(Integer, default=0)
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    
+    # Mối quan hệ với Product
+    product = relationship("Product", back_populates="images")
 
 class CartItems(Base):
     __tablename__ = "cart_items"

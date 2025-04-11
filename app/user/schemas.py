@@ -17,7 +17,9 @@ class UserBase(BaseModel):
     username: str
     email: str
     full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     role: Optional[str] = "user"
+    status: Optional[str] = "active"
 
 class UserCreate(UserBase):
     password: str
@@ -26,12 +28,18 @@ class UserUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[str] = None
     full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     password: Optional[str] = None
     role: Optional[str] = None
+    status: Optional[str] = None
     location: Optional[str] = None
 
+class AvatarUpdate(BaseModel):
+    avatar_url: str
+    public_id: Optional[str] = None
+
 class Login(BaseModel):
-    username: str
+    username_or_email: str
     password: str
 
 class User(UserBase):
@@ -44,3 +52,8 @@ class UserInDB(User):
     password: str
     class Config:
         from_attributes = True
+
+class UserSearchFilter(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
