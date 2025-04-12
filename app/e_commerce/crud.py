@@ -4,6 +4,16 @@ from decimal import Decimal
 from datetime import datetime
 from .models import Product, Category, CartItems, Orders, OrderItems, FavoriteMenus, Menus
 from .schemas import ProductCreate, ProductUpdate, CartItemCreate, OrderCreate
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Import the invalidation helper - this needs to be imported conditionally
+# to avoid circular imports since it will be called from payment module
+async def invalidate_dashboard_cache_async():
+    """Wrapper function to avoid circular imports"""
+    from ..core.invalidation_helpers import invalidate_dashboard_cache
+    return await invalidate_dashboard_cache()
 
 # Product CRUD operations
 def get_products(db: Session, skip: int = 0, limit: int = 100, category_id: Optional[int] = None) -> List[Product]:
@@ -100,6 +110,18 @@ def update_order_status(db: Session, order_id: int, status: str) -> Optional[Ord
     db_order.status = status
     db.commit()
     db.refresh(db_order)
+    
+    # Schedule cache invalidation instead of awaiting directly
+    # since this is a synchronous function
+    import asyncio
+    try:
+        # Schedule the invalidation to run in the background
+        loop = asyncio.get_event_loop()
+        loop.create_task(invalidate_dashboard_cache_async())
+        logger.info(f"Dashboard cache invalidation scheduled after updating order {order_id}")
+    except Exception as e:
+        logger.error(f"Failed to schedule cache invalidation: {e}")
+    
     return db_order
 
 def get_order(db: Session, order_id: int) -> Optional[Orders]:
@@ -193,4 +215,4 @@ def delete_favorite_menu(db: Session, favorite_menu_id: int) -> bool:
     
     db.delete(favorite)
     db.commit()
-    return True 
+    return True

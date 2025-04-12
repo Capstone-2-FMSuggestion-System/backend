@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
+from ..core.invalidation_helpers import invalidate_dashboard_cache
 from .models import User, Orders, Payments
 from ..e_commerce.models import Product
 from ..e_commerce.schemas import OrderCreate
@@ -78,6 +79,10 @@ async def create_zalopay_payment(order: OrderCreate, payment_method: PaymentMeth
         app_trans_id = "{:%y%m%d}_{}".format(datetime.now(), trans_id)
         logging.warning(f"app_trans_id not found in ZaloPay response, using generated value: {app_trans_id}")
 
+    # Invalidate dashboard cache to reflect new order
+    await invalidate_dashboard_cache()
+    logging.info(f"Dashboard cache invalidated after creating order {db_order.order_id}")
+
     return {
         "order_url": response.get("order_url"),
         "zp_trans_id": response.get("zp_trans_id"),
@@ -108,6 +113,10 @@ async def zalopay_callback(callback_data: ZaloPayCallback, request: Request, db:
         db_payment = db.query(Payments).filter(Payments.order_id == order_id).first()
         if db_payment:
             update_payment_status(db, payment_id=db_payment.payment_id, status="completed", zp_trans_id=zp_trans_id)
+        
+        # Invalidate dashboard cache when order is completed
+        await invalidate_dashboard_cache()
+        logging.info(f"Dashboard cache invalidated after completing order {order_id}")
 
         print(f"update order's status = success where app_trans_id = {app_trans_id}")
         return {"return_code": 1, "return_message": "success"}
@@ -151,4 +160,4 @@ async def get_zalopay_payment_methods():
         }
     ]
     
-    return {"payment_methods": payment_methods} 
+    return {"payment_methods": payment_methods}

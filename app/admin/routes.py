@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from ..core.database import get_db
 from ..core.auth import get_current_user
+from ..core.invalidation_helpers import invalidate_dashboard_cache
 from .models import User, Product, Category, Orders, Payments, Promotions
 from .schemas import ProductCreate, UserCreate, PromotionCreate, DashboardStats, RecentOrdersResponse, RevenueOverviewResponse, RecentOrder, RevenuePeriod
 from typing import List, Optional, Dict, Any
@@ -65,6 +66,11 @@ async def create_admin_user(
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    
+    # Invalidate dashboard cache when a new user is created
+    await invalidate_dashboard_cache()
+    logger.info(f"Dashboard cache invalidated after creating user {new_user.user_id}")
+    
     return {"message": "User created successfully", "user_id": new_user.user_id}
 
 @router.get("/products", response_model=List[dict])
@@ -101,6 +107,11 @@ async def create_product(
     db.add(new_product)
     db.commit()
     db.refresh(new_product)
+    
+    # Invalidate dashboard cache when a new product is created
+    await invalidate_dashboard_cache()
+    logger.info(f"Dashboard cache invalidated after creating product {new_product.product_id}")
+    
     return {"message": "Product created successfully", "product_id": new_product.product_id}
 
 @router.get("/orders", response_model=List[dict])
@@ -152,6 +163,11 @@ async def create_promotion(
     db.add(new_promotion)
     db.commit()
     db.refresh(new_promotion)
+    
+    # Invalidate dashboard cache when a new promotion is created
+    await invalidate_dashboard_cache()
+    logger.info(f"Dashboard cache invalidated after creating promotion {new_promotion.promotion_id}")
+    
     return {"message": "Promotion created successfully", "promotion_id": new_promotion.promotion_id}
 
 # API dashboard cũ (giữ lại để tương thích ngược)
@@ -187,7 +203,8 @@ async def get_dashboard_stats(
                 "created_at": order.created_at
             }
             for order in recent_orders
-        ]
+        ],
+        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
     }
 
 # API mới cho dashboard stats
@@ -234,11 +251,12 @@ async def get_dashboard_statistics(
         "total_orders": total_orders,
         "total_revenue": float(total_revenue),
         "total_customers": total_customers,
-        "total_products": total_products
+        "total_products": total_products,
+        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
     }
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
-    await set_cache(cache_key, json.dumps(result), 300)
+    await set_cache(cache_key, json.dumps(result, default=str), 300)
     logger.info("Dashboard stats cached for 5 minutes")
     
     return result
@@ -294,7 +312,10 @@ async def get_recent_orders(
             "created_at": order.created_at
         })
     
-    result = {"orders": orders_list}
+    result = {
+        "orders": orders_list,
+        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
+    }
     
     # Lưu vào cache với thời gian hết hạn là 2 phút
     await set_cache(cache_key, json.dumps(result, default=str), 120)
@@ -496,11 +517,12 @@ async def get_revenue_overview(
     
     result = {
         "time_range": time_range,
-        "data": result_data
+        "data": result_data,
+        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
     }
     
     # Lưu vào cache với thời gian hết hạn 10 phút
-    await set_cache(cache_key, json.dumps(result), 600)
+    await set_cache(cache_key, json.dumps(result, default=str), 600)
     logger.info(f"Revenue overview cached for 10 minutes")
     
     return result
@@ -533,7 +555,7 @@ async def get_all_users_admin(
     
     # Kiểm tra cache
     cached_data = await get_cache(cache_key)
-    if cached_data:
+    if (cached_data):
         return json.loads(cached_data)
     
     # Lấy người dùng từ database
@@ -899,4 +921,25 @@ async def delete_user_admin(
     # Ghi log
     logger.info(f"User {user_id} deleted by admin {current_user.user_id}, cache updated")
     
-    return {"message": "Người dùng đã được xóa thành công"} 
+    return {"message": "Người dùng đã được xóa thành công"}
+
+@router.post("/dashboard/invalidate-cache", response_model=dict)
+async def manual_invalidate_dashboard_cache(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    API này cho phép admin xóa cache của dashboard thủ công.
+    Hữu ích trong trường hợp cần tải lại dữ liệu mới ngay lập tức.
+    """
+    logger.info(f"User {current_user.username} requested manual cache invalidation")
+    check_admin(current_user)
+    
+    success = await invalidate_dashboard_cache()
+    
+    if (success):
+        return {"message": "Dashboard cache invalidated successfully"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to invalidate dashboard cache"
+        )
