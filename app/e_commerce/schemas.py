@@ -77,7 +77,7 @@ class ProductUpdate(BaseModel):
 class ProductResponse(ProductBase):
     product_id: int
     created_at: datetime
-    images: List[ProductImageResponse] = []
+    images: List[str] = []
     
     class Config:
         from_attributes = True
@@ -182,6 +182,44 @@ class PromotionCreate(PromotionBase):
 class PromotionResponse(PromotionBase):
     promotion_id: int
     created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ProductSimpleResponse(BaseModel):
+    product_id: int
+    name: str
+    price: float
+    original_price: Optional[float] = None
+    unit: Optional[str] = None
+    image: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class RelatedProductResponse(BaseModel):
+    product_id: int
+    name: str
+    price: float
+    original_price: Optional[float] = None
+    unit: Optional[str] = None
+    image: Optional[str] = None
+    images: List[str] = []
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ProductDetailResponse(BaseModel):
+    product_id: int
+    name: str
+    price: float
+    original_price: Optional[float] = None
+    unit: Optional[str] = None
+    description: Optional[str] = None
+    stock_quantity: Optional[int] = 0
+    image: Optional[str] = None
+    images: List[str] = []
     
     class Config:
         from_attributes = True

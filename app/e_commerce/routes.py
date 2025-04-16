@@ -5,14 +5,26 @@ from ..core.auth import get_current_user
 from .models import Product, Category, Orders, OrderItems, Reviews
 from ..user.models import User
 from .schemas import (
-    ProductResponse, OrderCreate, OrderResponse, ReviewCreate, ReviewResponse, 
+    ProductBase, ProductCreate, ProductUpdate, ProductResponse, ProductImageCreate, 
+    ProductImageResponse, CartItemCreate, CartItem, OrderItemBase, OrderItemCreate, 
+    OrderCreate, OrderResponse, ReviewCreate, ReviewResponse, 
     CategoryResponse, CategoryWithSubcategories, ProductDiscountResponse, 
-    MainCategoryResponse
+    MainCategoryResponse, ProductImageResponse, ProductDetailResponse, ProductSimpleResponse,
+    RelatedProductResponse
 )
 from ..core.cache import get_cache, set_cache
 from typing import List, Optional
 import random
 import json
+import datetime
+from pydantic import BaseModel
+
+# Custom JSON encoder to handle datetime objects
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 router = APIRouter(prefix="/api/e-commerce", tags=["E-Commerce"])
 
@@ -33,7 +45,7 @@ async def get_categories(db: Session = Depends(get_db)):
     result = [MainCategoryResponse.model_validate(category) for category in main_categories]
     
     # Lưu dữ liệu vào cache
-    await set_cache(cache_key, json.dumps([category.model_dump() for category in result]), expire=600)
+    await set_cache(cache_key, json.dumps([category.model_dump() for category in result], cls=DateTimeEncoder), expire=600)
     
     return result
 
@@ -59,7 +71,7 @@ async def get_subcategories_by_category(category_id: int, db: Session = Depends(
     result = [CategoryResponse.model_validate(subcategory) for subcategory in subcategories]
     
     # Lưu dữ liệu vào cache
-    await set_cache(cache_key, json.dumps([subcategory.model_dump() for subcategory in result]), expire=600)
+    await set_cache(cache_key, json.dumps([subcategory.model_dump() for subcategory in result], cls=DateTimeEncoder), expire=600)
     
     return result
 
@@ -99,7 +111,7 @@ async def get_categories_with_subcategories(db: Session = Depends(get_db)):
     
     # Lưu kết quả vào cache - cần xử lý đặc biệt vì cấu trúc phức tạp
     try:
-        serialized_data = json.dumps([cat.model_dump() for cat in root_categories])
+        serialized_data = json.dumps([cat.model_dump() for cat in root_categories], cls=DateTimeEncoder)
         await set_cache(cache_key, serialized_data, expire=600)
     except Exception as e:
         # Trong trường hợp serialize gặp lỗi, chỉ log và bỏ qua việc cache
@@ -139,12 +151,46 @@ async def get_products(
     await set_cache(cache_key, str(result), expire=300)
     return result
 
-@router.get("/products/{product_id}", response_model=ProductResponse)
+@router.get("/products/{product_id}", response_model=ProductDetailResponse)
 async def get_product(product_id: int, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.product_id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    return ProductResponse.from_orm(product)
+    
+    # Tính giá gốc và giá sau giảm
+    original_price = float(product.original_price)
+    price =  float(product.price)
+    
+    # Lấy tất cả hình ảnh từ mối quan hệ images và sắp xếp theo display_order tăng dần
+    images = []
+    if product.images:
+        # Sắp xếp hình ảnh theo display_order tăng dần
+        sorted_images = sorted(product.images, key=lambda img: img.display_order)
+        images = [img.image_url for img in sorted_images]
+    
+    # Lấy hình ảnh primary để gán vào trường image
+    image_url = None
+    if product.images:
+        # Ưu tiên lấy hình ảnh được đánh dấu là primary
+        primary_images = [img for img in product.images if img.is_primary]
+        if primary_images:
+            image_url = primary_images[0].image_url
+        elif images:
+            # Nếu không có hình ảnh primary, lấy hình ảnh đầu tiên sau khi sắp xếp
+            image_url = images[0]
+    
+    # Tạo đối tượng response với các trường cần thiết
+    return ProductDetailResponse(
+        product_id=product.product_id,
+        name=product.name,
+        price=price,
+        original_price=original_price,
+        unit=product.unit,
+        description=product.description,
+        stock_quantity=product.stock_quantity,
+        image=image_url,
+        images=images
+    )
 
 @router.get("/products/{product_id}/reviews", response_model=List[ReviewResponse])
 async def get_product_reviews(product_id: int, db: Session = Depends(get_db)):
@@ -303,7 +349,7 @@ async def get_category_with_all_subcategories(category_id: int, db: Session = De
     
     # Lưu kết quả vào cache
     try:
-        serialized_data = json.dumps(result.model_dump())
+        serialized_data = json.dumps(result.model_dump(), cls=DateTimeEncoder)
         await set_cache(cache_key, serialized_data, expire=600)
     except Exception as e:
         # Trong trường hợp serialize gặp lỗi, chỉ log và bỏ qua việc cache
@@ -311,19 +357,45 @@ async def get_category_with_all_subcategories(category_id: int, db: Session = De
     
     return result
 
-@router.get("/categories/{category_id}/products", response_model=List[ProductDiscountResponse])
+# Định nghĩa response model cho API get_products_by_subcategory
+class ProductsByCategoryResponse(BaseModel):
+    products: List[ProductSimpleResponse]
+    pagination: dict
+    category: CategoryResponse
+
+@router.get("/categories/{category_id}/products", response_model=ProductsByCategoryResponse)
 async def get_products_by_subcategory(
     category_id: int,
     include_subcategories: bool = True,
+    page: int = 1,
+    limit: int = 9,
+    sort_by: Optional[str] = "name",  # name, price_asc, price_desc, newest
     db: Session = Depends(get_db)
 ):
+    """
+    Lấy sản phẩm theo danh mục, hỗ trợ phân trang
+    - category_id: ID của danh mục
+    - include_subcategories: Có lấy sản phẩm từ danh mục con hay không
+    - page: Trang hiện tại
+    - limit: Số sản phẩm trên mỗi trang (tối đa 9)
+    - sort_by: Tiêu chí sắp xếp (name, price_asc, price_desc, newest)
+    """
+    # Giới hạn số lượng sản phẩm trên mỗi trang
+    if limit > 9:
+        limit = 9
+    
+    if page < 1:
+        page = 1
+    
+    # Tính offset cho phân trang
+    offset = (page - 1) * limit
+    
     # Kiểm tra xem dữ liệu có trong cache không
-    cache_key = f"subcategory:{category_id}:products:{include_subcategories}"
+    cache_key = f"subcategory:{category_id}:products_simple:{include_subcategories}:page:{page}:limit:{limit}:sort:{sort_by}"
     cached_result = await get_cache(cache_key)
     if cached_result:
         try:
-            cached_data = json.loads(cached_result)
-            return [ProductDiscountResponse.model_validate(item) for item in cached_data]
+            return json.loads(cached_result)
         except Exception as e:
             print(f"Error deserializing cached products: {str(e)}")
             # Tiếp tục xử lý nếu có lỗi khi parse cache
@@ -349,43 +421,262 @@ async def get_products_by_subcategory(
         get_subcategories(category_id)
         category_ids.extend(all_subcategories)
     
-    # Lấy sản phẩm theo list category_id
-    products = db.query(Product).filter(Product.category_id.in_(category_ids)).all()
+    # Tạo query cơ bản
+    base_query = db.query(Product).filter(Product.category_id.in_(category_ids))
+    
+    # Đếm tổng số sản phẩm
+    total_products = base_query.count()
+    
+    # Tính tổng số trang
+    total_pages = (total_products + limit - 1) // limit
+    
+    # Áp dụng sắp xếp
+    if sort_by == "price_asc":
+        base_query = base_query.order_by(Product.price.asc())
+    elif sort_by == "price_desc":
+        base_query = base_query.order_by(Product.price.desc())
+    elif sort_by == "newest":
+        base_query = base_query.order_by(Product.created_at.desc())
+    else:  # Mặc định sắp xếp theo tên
+        base_query = base_query.order_by(Product.name.asc())
+    
+    # Áp dụng phân trang
+    products = base_query.offset(offset).limit(limit).all()
     
     # Tạo response với thông tin giảm giá
-    result = []
+    result_products = []
     for product in products:
-        # Lấy giá gốc từ sản phẩm
-        original_price = float(product.price)
-        
-        # Trong thực tế, giá sau giảm có thể lấy từ bảng promotions hoặc bảng riêng
-        # Ở đây, chúng ta tạm tính giá sau giảm, có thể thay đổi theo logic thực tế
-        discount_price = original_price * 0.9  # Giả sử được giảm 10% cho ví dụ
-        
-        # Tính phần trăm giảm giá dựa trên giá gốc và giá sau giảm
-        discount_percent = 0
-        if original_price > 0 and discount_price is not None:
-            discount_percent = round(((original_price - discount_price) / original_price) * 100, 2)
-            discount_price = round(discount_price, 2)
-        else:
-            discount_price = original_price
+        # Tìm hình ảnh có is_primary = 1
+        image_url = None
+        images = []
+        if product.images:
+            # Sắp xếp hình ảnh theo display_order tăng dần
+            sorted_images = sorted(product.images, key=lambda img: img.display_order)
+            images = [img.image_url for img in sorted_images]
             
-        product_data = {
-            "product_id": product.product_id,
-            "name": product.name,
-            "original_price": original_price,
-            "discount_price": discount_price,
-            "discount_percent": discount_percent,
-            "image_url": product.image_url,
-            "category_id": product.category_id
-        }
-        result.append(ProductDiscountResponse.model_validate(product_data))
+            # Tìm hình ảnh primary
+            primary_images = [img for img in product.images if img.is_primary]
+            if primary_images:
+                image_url = primary_images[0].image_url
+            elif images:
+                # Nếu không có hình ảnh primary, lấy hình ảnh đầu tiên sau khi sắp xếp
+                image_url = images[0]
+        
+        # Tính giá gốc và giá sau giảm
+        original_price = float(product.original_price if product.original_price else product.price)
+        price = float(product.price)  # Giả sử được giảm 10% cho ví dụ
+        
+        # Tạo đối tượng sản phẩm đơn giản
+        product_data = ProductSimpleResponse(
+            product_id=product.product_id,
+            name=product.name,
+            price=price,
+            original_price=original_price,
+            unit=product.unit,
+            image=image_url,
+            images=images,
+            category_id=product.category_id,
+            created_at=product.created_at.isoformat() if product.created_at else datetime.datetime.now().isoformat(),
+            description=product.description,
+            stock_quantity=product.stock_quantity,
+            is_featured=product.is_featured
+        )
+        result_products.append(product_data)
+    
+    # Tạo response model
+    category_response = CategoryResponse(
+        category_id=category.category_id,
+        name=category.name,
+        description=category.description,
+        level=category.level,
+        parent_id=category.parent_id
+    )
+    
+    pagination = {
+        "total_products": total_products,
+        "total_pages": total_pages,
+        "current_page": page,
+        "limit": limit,
+        "has_next": page < total_pages,
+        "has_prev": page > 1
+    }
+    
+    result = ProductsByCategoryResponse(
+        products=result_products,
+        pagination=pagination,
+        category=category_response
+    )
     
     # Lưu kết quả vào cache
     try:
-        serialized_data = json.dumps([product.model_dump() for product in result])
-        await set_cache(cache_key, serialized_data, expire=600)
+        await set_cache(cache_key, json.dumps(result.model_dump(), cls=DateTimeEncoder), expire=600)
     except Exception as e:
         print(f"Error serializing products: {str(e)}")
     
-    return result 
+    return result
+
+@router.get("/products/{product_id}/related", response_model=List[RelatedProductResponse])
+async def get_related_products(
+    product_id: int, 
+    limit: int = 4,
+    db: Session = Depends(get_db)
+):
+    """
+    Lấy danh sách sản phẩm liên quan dựa trên sản phẩm được chọn.
+    Các tiêu chí:
+    1. Cùng danh mục con (subcategory)
+    2. Khoảng giá tương tự
+    3. Các thuộc tính khác có liên quan
+    """
+    # Kiểm tra cache
+    cache_key = f"products:{product_id}:related:limit:{limit}"
+    cached_result = await get_cache(cache_key)
+    if cached_result:
+        try:
+            cached_data = json.loads(cached_result)
+            return [RelatedProductResponse.model_validate(item) for item in cached_data]
+        except Exception as e:
+            print(f"Lỗi khi đọc cache sản phẩm liên quan: {str(e)}")
+    
+    # Lấy thông tin sản phẩm hiện tại
+    current_product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not current_product:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sản phẩm")
+    
+    # Lấy thông tin về danh mục của sản phẩm
+    category = db.query(Category).filter(Category.category_id == current_product.category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Không tìm thấy danh mục của sản phẩm")
+    
+    related_products = []
+    
+    # Bước 1: Lấy sản phẩm cùng danh mục con (subcategory)
+    if category.parent_id:
+        # Lấy các sản phẩm cùng subcategory, ngoại trừ sản phẩm hiện tại
+        same_subcategory_products = db.query(Product).filter(
+            Product.category_id == current_product.category_id,
+            Product.product_id != product_id
+        ).limit(limit * 2).all()
+        
+        related_products.extend(same_subcategory_products)
+    
+    # Bước 2: Nếu không đủ sản phẩm từ cùng subcategory, lấy thêm sản phẩm từ parent category
+    if len(related_products) < limit and category.parent_id:
+        # Lấy tất cả subcategories cùng cấp (siblings)
+        sibling_categories = db.query(Category).filter(
+            Category.parent_id == category.parent_id,
+            Category.category_id != category.category_id
+        ).all()
+        
+        sibling_category_ids = [cat.category_id for cat in sibling_categories]
+        
+        # Lấy sản phẩm từ các danh mục cùng cấp
+        if sibling_category_ids:
+            sibling_products = db.query(Product).filter(
+                Product.category_id.in_(sibling_category_ids),
+                Product.product_id != product_id
+            ).limit(limit - len(related_products)).all()
+            
+            related_products.extend(sibling_products)
+    
+    # Bước 3: Nếu vẫn không đủ, lấy sản phẩm cùng khoảng giá
+    if len(related_products) < limit:
+        # Khoảng giá ±30%
+        min_price = float(current_product.price) * 0.7
+        max_price = float(current_product.price) * 1.3
+        
+        # Lấy ID của các sản phẩm đã có để loại trừ
+        existing_ids = [p.product_id for p in related_products] + [product_id]
+        
+        price_similar_products = db.query(Product).filter(
+            Product.price.between(min_price, max_price),
+            Product.product_id.notin_(existing_ids)
+        ).limit(limit - len(related_products)).all()
+        
+        related_products.extend(price_similar_products)
+    
+    # Tính điểm liên quan cho từng sản phẩm
+    scored_products = []
+    for product in related_products:
+        score = 0
+        
+        # Cùng danh mục con (điểm cao nhất)
+        if product.category_id == current_product.category_id:
+            score += 10
+        # Danh mục cùng cấp (điểm cao thứ hai)
+        elif category.parent_id and product.category_id in sibling_category_ids:
+            score += 5
+        
+        # Khoảng giá tương tự (điểm trung bình)
+        price_diff = abs(float(product.price) - float(current_product.price))
+        if price_diff < float(current_product.price) * 0.1:  # Chênh lệch < 10%
+            score += 5
+        elif price_diff < float(current_product.price) * 0.2:  # Chênh lệch < 20%
+            score += 3
+        elif price_diff < float(current_product.price) * 0.3:  # Chênh lệch < 30%
+            score += 1
+        
+        scored_products.append((product, score))
+    
+    # Sắp xếp theo điểm liên quan (cao đến thấp)
+    scored_products.sort(key=lambda x: x[1], reverse=True)
+    
+    # Lấy các sản phẩm có điểm cao nhất và giới hạn số lượng
+    final_products = [item[0] for item in scored_products[:limit]]
+    
+    # Chuyển đổi sang định dạng response - chỉ bao gồm các trường cần thiết
+    result = []
+    for product in final_products:
+        # Tìm hình ảnh có is_primary = 1
+        image_url = None
+        images = []
+        if product.images:
+            # Sắp xếp hình ảnh theo display_order tăng dần
+            sorted_images = sorted(product.images, key=lambda img: img.display_order)
+            images = [img.image_url for img in sorted_images]
+            
+            # Tìm hình ảnh primary
+            primary_images = [img for img in product.images if img.is_primary]
+            if primary_images:
+                image_url = primary_images[0].image_url
+            elif images:
+                # Nếu không có hình ảnh primary, lấy hình ảnh đầu tiên sau khi sắp xếp
+                image_url = images[0]
+        
+        # Tính giá gốc và giá sau giảm
+        original_price = float(product.original_price if product.original_price else product.price)
+        price = float(product.price) * 0.9  # Giả sử được giảm 10% cho ví dụ
+        
+        # Tạo đối tượng sản phẩm đơn giản
+        simple_product = {
+            "product_id": product.product_id,
+            "name": product.name,
+            "price": price,
+            "original_price": original_price,
+            "unit": product.unit,
+            "image": image_url,
+            "images": images,
+            "created_at": product.created_at.isoformat() if product.created_at else datetime.datetime.now().isoformat()
+        }
+        result.append(simple_product)
+    
+    # Lưu kết quả vào cache
+    try:
+        await set_cache(
+            cache_key, 
+            json.dumps(result, cls=DateTimeEncoder), 
+            expire=600  # Cache 10 phút
+        )
+    except Exception as e:
+        print(f"Lỗi khi lưu cache sản phẩm liên quan: {str(e)}")
+    
+    # Chuyển đổi các dict thành RelatedProductResponse
+    response_objects = [RelatedProductResponse.model_validate(product) for product in result]
+    
+    # In ra log để kiểm tra dữ liệu trả về
+    print("=== DEBUG RELATED PRODUCTS RESPONSE ===")
+    for idx, obj in enumerate(response_objects):
+        print(f"Product {idx + 1}: {obj.model_dump_json()}")
+    print("======================================")
+    
+    return response_objects

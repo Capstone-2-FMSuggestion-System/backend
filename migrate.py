@@ -1,6 +1,6 @@
 from app.core.database import engine, Base
 from app.user.models import User
-from app.e_commerce.models import Category, Product, CartItems, Orders, OrderItems, Menus, MenuItems, FavoriteMenus, Reviews, Promotions
+from app.e_commerce.models import Category, Product, CartItems, Orders, OrderItems, Menus, MenuItems, FavoriteMenus, Reviews, Promotions, CategoryPromotion, ProductImages
 from app.inventory.models import Inventory, InventoryTransactions
 from app.payment.models import Payments
 

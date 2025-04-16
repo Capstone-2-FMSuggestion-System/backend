@@ -14,6 +14,9 @@ class Category(Base):
     name = Column(String(50), nullable=False)
     description = Column(String(500))
     level = Column(Integer, nullable=False)
+    
+    # Relationship with promotions
+    promotions = relationship("CategoryPromotion", back_populates="category")
 
 class Product(Base):
     __tablename__ = "products"
@@ -22,6 +25,7 @@ class Product(Base):
     name = Column(String(100), nullable=False)
     description = Column(String(1000))
     price = Column(DECIMAL(10, 2), nullable=False)
+    original_price = Column(DECIMAL(10, 2), nullable=False)
     unit = Column(String(20))
     stock_quantity = Column(Integer, default=0)
     is_featured = Column(Boolean, default=False)
@@ -105,3 +109,17 @@ class Promotions(Base):
     start_date = Column(TIMESTAMP)
     end_date = Column(TIMESTAMP)
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    
+    # Relationship with categories
+    categories = relationship("CategoryPromotion", back_populates="promotion")
+
+class CategoryPromotion(Base):
+    __tablename__ = "category_promotions"
+    category_promotion_id = Column(Integer, primary_key=True, index=True)
+    category_id = Column(Integer, ForeignKey("categories.category_id"), nullable=False)
+    promotion_id = Column(Integer, ForeignKey("promotions.promotion_id"), nullable=False)
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    
+    # Relationships
+    category = relationship("Category", back_populates="promotions")
+    promotion = relationship("Promotions", back_populates="categories")

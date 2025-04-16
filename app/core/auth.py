@@ -14,7 +14,7 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     """
@@ -70,19 +70,45 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Không thể xác thực thông tin đăng nhập",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
+        # In ra token để debug (chỉ in một phần để bảo mật)
+        token_preview = token[:10] + "..." if token and len(token) > 10 else "Invalid token"
+        print(f"Processing token: {token_preview}")
+        
+        # Giải mã token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id")
-        if user_id is None:
+        username: str = payload.get("username")
+        
+        print(f"Token decoded successfully. user_id: {user_id}, username: {username}")
+        
+        if user_id is None or username is None:
+            print(f"Invalid token payload: missing user_id or username. Payload: {payload}")
             raise credentials_exception
-    except JWTError:
+            
+    except JWTError as e:
+        print(f"JWT decode error: {str(e)}")
         raise credentials_exception
-    user = get_user_by_username(db, payload.get("username"))
+        
+    # Tìm người dùng trong database
+    user = get_user_by_username(db, username)
     if not user:
+        print(f"User with username '{username}' not found in database")
         raise credentials_exception
+    
+    # Kiểm tra trạng thái người dùng
+    if user.status == "blocked":
+        print(f"User '{username}' is blocked")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    print(f"User '{username}' (ID: {user_id}) authenticated successfully with role '{user.role}'")
     return user
 
 def get_current_active_user(current_user = Depends(get_current_user)):
@@ -110,4 +136,4 @@ def get_current_active_user(current_user = Depends(get_current_user)):
     """
     if current_user.is_active is False:
         raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user 
+    return current_user
