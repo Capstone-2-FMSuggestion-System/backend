@@ -5,16 +5,25 @@ import re
 import aiofiles
 import os
 import tempfile
+import logging
 from fastapi import UploadFile
 from typing import List, Optional
 from . import config
 
-# Cấu hình Cloudinary từ file config
-cloudinary.config(
-    cloud_name=config.CLOUDINARY_CLOUD_NAME,
-    api_key=config.CLOUDINARY_API_KEY,
-    api_secret=config.CLOUDINARY_API_SECRET
-)
+# Cấu hình logging
+logger = logging.getLogger(__name__)
+
+# Hàm để tạo cấu hình Cloudinary mỗi khi cần thiết
+def get_cloudinary_config():
+    cloudinary.config(
+        cloud_name=config.CLOUDINARY_CLOUD_NAME,
+        api_key=config.CLOUDINARY_API_KEY,
+        api_secret=config.CLOUDINARY_API_SECRET
+    )
+    return cloudinary.config()
+
+# Đảm bảo cấu hình ban đầu được thiết lập
+get_cloudinary_config()
 
 async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
     """
@@ -36,38 +45,59 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
     safe_filename = re.sub(r'[^\w\-\.]', '-', filename)
     
     # Tạo temporary file
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_file = None
     
     try:
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        
         # Đọc và ghi vào temporary file
-        async with aiofiles.open(temp_file.name, 'wb') as out_file:
+        try:
             content = await file.read()
-            await out_file.write(content)
+            with open(temp_file.name, 'wb') as out_file:
+                out_file.write(content)
+        except Exception as e:
+            raise ValueError(f"Lỗi khi đọc/ghi file tạm: {str(e)}")
+        
+        # Tạo lại cấu hình Cloudinary mỗi khi upload để đảm bảo kết nối
+        cloud_config = get_cloudinary_config()
         
         # Upload lên Cloudinary
-        upload_folder = folder or config.CLOUDINARY_FOLDER
-        upload_result = cloudinary.uploader.upload(
-            temp_file.name,
-            folder=upload_folder,
-            public_id=os.path.splitext(safe_filename)[0],
-            overwrite=True,
-            resource_type="image",
-            unique_filename=True
-        )
-        
-        return {
-            "public_id": upload_result["public_id"],
-            "url": upload_result["url"],
-            "secure_url": upload_result["secure_url"],
-            "format": upload_result["format"],
-            "width": upload_result["width"],
-            "height": upload_result["height"],
-            "bytes": upload_result["bytes"]
-        }
+        try:
+            logger.info(f"Uploading image to Cloudinary: {safe_filename} to folder {folder}")
+            # Log cấu hình Cloudinary để debug
+            logger.info(f"Cloudinary config: cloud_name={cloud_config.cloud_name}, api_key={cloud_config.api_key[:6]}...")
+            
+            # Không dùng upload_preset vì gây lỗi "Upload preset not found"
+            upload_result = cloudinary.uploader.upload(
+                temp_file.name,
+                folder=folder,  # Sử dụng folder trực tiếp từ tham số
+                public_id=os.path.splitext(safe_filename)[0],
+                overwrite=True,
+                resource_type="image",
+                unique_filename=True
+            )
+            
+            logger.info(f"Upload successful: {upload_result.get('public_id', 'unknown')}")
+            return {
+                "public_id": upload_result["public_id"],
+                "url": upload_result["url"],
+                "secure_url": upload_result["secure_url"],
+                "format": upload_result["format"],
+                "width": upload_result["width"],
+                "height": upload_result["height"],
+                "bytes": upload_result["bytes"]
+            }
+        except Exception as e:
+            logger.error(f"Error uploading to Cloudinary: {str(e)}")
+            raise ValueError(f"Lỗi khi upload lên Cloudinary: {str(e)}")
     finally:
         # Dọn dẹp temporary file
-        temp_file.close()
-        os.unlink(temp_file.name)
+        if temp_file:
+            temp_file.close()
+            try:
+                os.unlink(temp_file.name)
+            except:
+                pass
         
 async def upload_multiple_images(files: List[UploadFile], folder: Optional[str] = None) -> List[dict]:
     """

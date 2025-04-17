@@ -17,6 +17,10 @@ from ..core.cloudinary_utils import upload_image, delete_image
 from typing import List
 import os
 import re
+import logging
+
+# Cấu hình logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
@@ -107,45 +111,79 @@ async def update_user_avatar(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    logger.info(f"Avatar upload request for user: {current_user.username} (ID: {current_user.user_id})")
+    
     # Kiểm tra định dạng file
     allowed_extensions = ["jpg", "jpeg", "png", "gif", "webp"]
     file_extension = file.filename.split(".")[-1].lower()
     
     if file_extension not in allowed_extensions:
+        logger.warning(f"Invalid file extension: {file_extension} (Allowed: {allowed_extensions})")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File phải có định dạng: {', '.join(allowed_extensions)}"
         )
     
+    # Kiểm tra kích thước file (max 2MB)
+    file_size = 0
+    file_content = await file.read()
+    file_size = len(file_content)
+    # Đặt lại vị trí của file để đọc lại sau này
+    await file.seek(0)
+    
+    max_size = 2 * 1024 * 1024  # 2MB
+    if file_size > max_size:
+        logger.warning(f"File too large: {file_size} bytes (Max: {max_size} bytes)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Kích thước file quá lớn. Tối đa 2MB."
+        )
+    
     # Xóa avatar cũ nếu có
     if current_user.avatar_url:
+        logger.info(f"Existing avatar found: {current_user.avatar_url}")
         # Lấy public_id từ URL
         match = re.search(r'data_fm/([^/]+)', current_user.avatar_url)
         if match:
             old_public_id = f"data_fm/{match.group(1).split('.')[0]}"
             try:
+                logger.info(f"Attempting to delete old avatar: {old_public_id}")
                 await delete_image(old_public_id)
+                logger.info(f"Successfully deleted old avatar")
             except Exception as e:
                 # Log lỗi nhưng vẫn tiếp tục tải lên avatar mới
-                print(f"Không thể xóa avatar cũ: {e}")
+                logger.error(f"Failed to delete old avatar: {str(e)}")
+                print(f"Không thể xóa avatar cũ: {str(e)}")
     
     # Tải lên avatar mới
     try:
+        logger.info(f"Uploading new avatar: {file.filename} ({file_size} bytes)")
         upload_result = await upload_image(file, folder="data_fm")
         
         # Cập nhật URL avatar trong database
         current_user.avatar_url = upload_result["url"]
         db.commit()
+        logger.info(f"Avatar updated in database: {upload_result['url']}")
         
         # Xóa cache thông tin người dùng
         cache_key = f"user_info:{current_user.user_id}"
         await redis_client.delete(cache_key)
+        logger.info(f"User cache cleared: {cache_key}")
         
         return {
             "message": "Avatar updated successfully",
             "avatar_url": upload_result["url"]
         }
+    except ValueError as e:
+        # Bắt lỗi từ hàm upload_image
+        logger.error(f"Validation error in avatar upload: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
+        logger.error(f"Unexpected error in avatar upload: {str(e)}")
+        print(f"Lỗi không xác định khi cập nhật avatar: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload avatar: {str(e)}"

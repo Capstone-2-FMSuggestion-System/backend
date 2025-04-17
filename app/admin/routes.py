@@ -236,29 +236,60 @@ async def get_dashboard_statistics(
     cached_data = await get_cache(cache_key)
     if cached_data:
         logger.info("Returning dashboard stats from cache")
-        return json.loads(cached_data)
+        cached_dict = json.loads(cached_data)
+        
+        # Xác nhận cache có đầy đủ trường cần thiết theo model DashboardStats
+        if not all(field in cached_dict for field in ["total_users", "new_users_today", "new_orders_today", "new_products_today", "revenue_today"]):
+            logger.info("Cache không phù hợp với model DashboardStats, cần tạo lại cache")
+            # Xóa cache hiện tại để tạo lại
+            await redis_client.delete(cache_key)
+            cached_data = None
+        else:
+            return cached_dict
+    
+    # Nếu không có cache hoặc cache không hợp lệ, tính toán lại
+    
+    # Tính ngày bắt đầu của ngày hôm nay
+    today_start = datetime.combine(datetime.now().date(), datetime.min.time())
     
     # Đếm tổng số đơn hàng
     total_orders = db.query(Orders).count()
+    
+    # Đếm số đơn hàng mới trong ngày
+    new_orders_today = db.query(Orders).filter(Orders.created_at >= today_start).count()
     
     # Tính tổng doanh thu từ các đơn hàng đã hoàn thành
     total_revenue = db.query(func.sum(Orders.total_amount)).filter(
         Orders.status == "completed"
     ).scalar() or 0
     
-    # Đếm tổng số khách hàng (người dùng có vai trò "user")
-    total_customers = db.query(User).filter(User.role == "user").count()
+    # Tính doanh thu trong ngày
+    revenue_today = db.query(func.sum(Orders.total_amount)).filter(
+        Orders.created_at >= today_start
+    ).scalar() or 0
+    
+    # Đếm tổng số người dùng
+    total_users = db.query(User).count()
+    
+    # Đếm số người dùng mới trong ngày
+    new_users_today = db.query(User).filter(User.created_at >= today_start).count()
     
     # Đếm tổng số sản phẩm
     total_products = db.query(Product).count()
     
+    # Đếm số sản phẩm mới trong ngày
+    new_products_today = db.query(Product).filter(Product.created_at >= today_start).count()
+    
     # Tạo kết quả
     result = {
+        "total_users": total_users,
         "total_orders": total_orders,
-        "total_revenue": float(total_revenue),
-        "total_customers": total_customers,
         "total_products": total_products,
-        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
+        "total_revenue": float(total_revenue),
+        "new_users_today": new_users_today,
+        "new_orders_today": new_orders_today,
+        "new_products_today": new_products_today,
+        "revenue_today": float(revenue_today)
     }
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
@@ -294,7 +325,15 @@ async def get_recent_orders(
     cached_data = await get_cache(cache_key)
     if cached_data:
         logger.info(f"Returning recent orders (limit={limit}) from cache")
-        return json.loads(cached_data)
+        cached_dict = json.loads(cached_data)
+        
+        # Kiểm tra cấu trúc response có đúng không
+        if "orders" not in cached_dict or "total" not in cached_dict:
+            logger.info("Cache không phù hợp với model RecentOrdersResponse, cần tạo lại cache")
+            await redis_client.delete(cache_key)
+            cached_data = None
+        else:
+            return cached_dict
     
     # Lấy đơn hàng gần đây nhất
     recent_orders_query = db.query(
@@ -305,22 +344,23 @@ async def get_recent_orders(
         Orders.created_at.desc()
     ).limit(limit).all()
     
+    # Đếm tổng số đơn hàng
+    total_orders = db.query(Orders).count()
+    
     # Chuyển đổi kết quả sang định dạng mong muốn
     orders_list = []
-    for order, customer_name in recent_orders_query:
+    for order, user_name in recent_orders_query:
         orders_list.append({
             "order_id": order.order_id,
-            "user_id": order.user_id,
-            "customer_name": customer_name,
+            "user_name": user_name,
             "total_amount": float(order.total_amount),
             "status": order.status,
-            "payment_method": order.payment_method,
             "created_at": order.created_at
         })
     
     result = {
         "orders": orders_list,
-        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
+        "total": total_orders
     }
     
     # Lưu vào cache với thời gian hết hạn là 2 phút
@@ -360,7 +400,15 @@ async def get_revenue_overview(
     cached_data = await get_cache(cache_key)
     if cached_data:
         logger.info(f"Returning revenue overview from cache")
-        return json.loads(cached_data)
+        cached_dict = json.loads(cached_data)
+        
+        # Kiểm tra cấu trúc response có đúng không
+        if not all(field in cached_dict for field in ["data", "total_revenue", "time_range"]):
+            logger.info("Cache không phù hợp với model RevenueOverviewResponse, cần tạo lại cache")
+            await redis_client.delete(cache_key)
+            cached_data = None
+        else:
+            return cached_dict
     
     # Chuyển đổi start_date và end_date sang đối tượng datetime
     today = datetime.now().date()
@@ -383,7 +431,7 @@ async def get_revenue_overview(
         else:  # yearly
             start_dt = datetime(end_dt.year - 5, 1, 1).date()
     
-    # Tạo query cơ bản để lấy doanh thu và số đơn hàng
+    # Tạo query cơ bản để lấy doanh thu
     base_query = db.query(
         Orders.created_at,
         Orders.total_amount
@@ -393,143 +441,101 @@ async def get_revenue_overview(
         Orders.created_at <= end_dt + timedelta(days=1)  # Bao gồm cả ngày end_date
     )
     
-    # Khởi tạo danh sách kết quả
-    result_data = []
+    # Khởi tạo danh sách kết quả và tính tổng doanh thu
+    total_revenue = db.query(func.sum(Orders.total_amount)).filter(
+        Orders.status == "completed",
+        Orders.created_at >= start_dt,
+        Orders.created_at <= end_dt + timedelta(days=1)
+    ).scalar() or 0
     
-    # Xử lý dựa vào time_range
+    # Định dạng dữ liệu theo time_range
+    revenue_data = []
+    
     if time_range == "daily":
         # Nhóm theo ngày
-        daily_revenue = {}
-        daily_orders = {}
-        
-        for order in base_query.all():
-            date_str = order.created_at.strftime("%Y-%m-%d")
-            if date_str not in daily_revenue:
-                daily_revenue[date_str] = 0
-                daily_orders[date_str] = 0
+        for i in range((end_dt - start_dt).days + 1):
+            current_date = start_dt + timedelta(days=i)
+            next_date = current_date + timedelta(days=1)
             
-            daily_revenue[date_str] += float(order.total_amount)
-            daily_orders[date_str] += 1
-        
-        # Điền vào khoảng trống nếu có
-        current_date = start_dt
-        while current_date <= end_dt:
-            date_str = current_date.strftime("%Y-%m-%d")
-            if date_str not in daily_revenue:
-                daily_revenue[date_str] = 0
-                daily_orders[date_str] = 0
+            daily_revenue = db.query(func.sum(Orders.total_amount)).filter(
+                Orders.status == "completed",
+                Orders.created_at >= current_date,
+                Orders.created_at < next_date
+            ).scalar() or 0
             
-            result_data.append({
-                "period": date_str,
-                "revenue": daily_revenue[date_str],
-                "orders_count": daily_orders[date_str]
+            revenue_data.append({
+                "label": current_date.strftime("%d/%m"),
+                "value": float(daily_revenue)
             })
-            
-            current_date += timedelta(days=1)
     
     elif time_range == "weekly":
         # Nhóm theo tuần
-        weekly_revenue = {}
-        weekly_orders = {}
-        
-        for order in base_query.all():
-            # ISO week format: YYYY-WW
-            year, week, _ = order.created_at.isocalendar()
-            week_str = f"{year}-W{week:02d}"
+        for i in range(12):  # 12 tuần
+            week_start = end_dt - timedelta(weeks=11-i)
+            week_end = week_start + timedelta(days=6)
             
-            if week_str not in weekly_revenue:
-                weekly_revenue[week_str] = 0
-                weekly_orders[week_str] = 0
+            if week_start < start_dt:
+                continue
+                
+            weekly_revenue = db.query(func.sum(Orders.total_amount)).filter(
+                Orders.status == "completed",
+                Orders.created_at >= week_start,
+                Orders.created_at <= week_end
+            ).scalar() or 0
             
-            weekly_revenue[week_str] += float(order.total_amount)
-            weekly_orders[week_str] += 1
-        
-        # Chuyển đổi danh sách tuần thành kết quả
-        for week_str in sorted(weekly_revenue.keys()):
-            result_data.append({
-                "period": week_str,
-                "revenue": weekly_revenue[week_str],
-                "orders_count": weekly_orders[week_str]
+            revenue_data.append({
+                "label": f"W{i+1}",
+                "value": float(weekly_revenue)
             })
     
     elif time_range == "monthly":
         # Nhóm theo tháng
-        monthly_revenue = {}
-        monthly_orders = {}
-        
-        for order in base_query.all():
-            month_str = order.created_at.strftime("%Y-%m")
+        current_date = start_dt.replace(day=1)
+        while current_date <= end_dt:
+            next_month = current_date.month + 1 if current_date.month < 12 else 1
+            next_year = current_date.year if current_date.month < 12 else current_date.year + 1
+            next_date = datetime(next_year, next_month, 1).date()
             
-            if month_str not in monthly_revenue:
-                monthly_revenue[month_str] = 0
-                monthly_orders[month_str] = 0
+            monthly_revenue = db.query(func.sum(Orders.total_amount)).filter(
+                Orders.status == "completed",
+                Orders.created_at >= current_date,
+                Orders.created_at < next_date
+            ).scalar() or 0
             
-            monthly_revenue[month_str] += float(order.total_amount)
-            monthly_orders[month_str] += 1
-        
-        # Điền vào khoảng trống nếu có
-        current_year = start_dt.year
-        current_month = start_dt.month
-        end_year = end_dt.year
-        end_month = end_dt.month
-        
-        while (current_year < end_year) or (current_year == end_year and current_month <= end_month):
-            month_str = f"{current_year}-{current_month:02d}"
-            
-            if month_str not in monthly_revenue:
-                monthly_revenue[month_str] = 0
-                monthly_orders[month_str] = 0
-            
-            result_data.append({
-                "period": month_str,
-                "revenue": monthly_revenue[month_str],
-                "orders_count": monthly_orders[month_str]
+            revenue_data.append({
+                "label": current_date.strftime("%m/%Y"),
+                "value": float(monthly_revenue)
             })
             
-            if current_month == 12:
-                current_month = 1
-                current_year += 1
-            else:
-                current_month += 1
+            current_date = next_date
     
     else:  # yearly
         # Nhóm theo năm
-        yearly_revenue = {}
-        yearly_orders = {}
-        
-        for order in base_query.all():
-            year_str = order.created_at.strftime("%Y")
-            
-            if year_str not in yearly_revenue:
-                yearly_revenue[year_str] = 0
-                yearly_orders[year_str] = 0
-            
-            yearly_revenue[year_str] += float(order.total_amount)
-            yearly_orders[year_str] += 1
-        
-        # Điền vào khoảng trống nếu có
         for year in range(start_dt.year, end_dt.year + 1):
-            year_str = str(year)
+            year_start = datetime(year, 1, 1).date()
+            year_end = datetime(year, 12, 31).date()
             
-            if year_str not in yearly_revenue:
-                yearly_revenue[year_str] = 0
-                yearly_orders[year_str] = 0
+            yearly_revenue = db.query(func.sum(Orders.total_amount)).filter(
+                Orders.status == "completed",
+                Orders.created_at >= year_start,
+                Orders.created_at <= year_end
+            ).scalar() or 0
             
-            result_data.append({
-                "period": year_str,
-                "revenue": yearly_revenue[year_str],
-                "orders_count": yearly_orders[year_str]
+            revenue_data.append({
+                "label": str(year),
+                "value": float(yearly_revenue)
             })
     
+    # Tạo kết quả theo định dạng của model
     result = {
-        "time_range": time_range,
-        "data": result_data,
-        "refreshed_at": datetime.now().isoformat()  # Thêm timestamp
+        "data": revenue_data,
+        "total_revenue": float(total_revenue),
+        "time_range": time_range
     }
     
-    # Lưu vào cache với thời gian hết hạn 10 phút
-    await set_cache(cache_key, json.dumps(result, default=str), 600)
-    logger.info(f"Revenue overview cached for 10 minutes")
+    # Lưu vào cache với thời gian hết hạn là 5 phút
+    await set_cache(cache_key, json.dumps(result, default=str), 300)
+    logger.info(f"Revenue overview cached for 5 minutes")
     
     return result
 
