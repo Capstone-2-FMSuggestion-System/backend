@@ -1,11 +1,11 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
-from ..e_commerce.models import Product, ProductImages
-from ..e_commerce.schemas import ProductCreate, ProductUpdate
+from ..e_commerce.models import Product, ProductImages #
+from ..e_commerce.schemas import ProductCreate, ProductUpdate #
 from typing import List, Optional, Dict, Any
-import logging
+import logging #
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) #
 
 def create_product(db: Session, product: ProductCreate) -> Product:
     """
@@ -28,18 +28,18 @@ def create_product(db: Session, product: ProductCreate) -> Product:
             category_id=product.category_id,
             unit=product.unit,
             stock_quantity=product.stock_quantity,
-            is_featured=product.is_featured
+            is_featured=product.is_featured #
         )
         
         # Thêm sản phẩm vào database
-        db.add(db_product)
+        db.add(db_product) #
         db.commit()
-        db.refresh(db_product)
+        db.refresh(db_product) #
         
-        return db_product
+        return db_product #
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating product: {str(e)}")
+        logger.error(f"Error creating product: {str(e)}") #
         raise
 
 def add_product_image(db: Session, product_id: int, image_url: str, is_primary: bool = False, display_order: int = 0) -> ProductImages:
