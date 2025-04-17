@@ -16,12 +16,13 @@ class CategoryCreate(CategoryBase):
 
 class CategoryResponse(CategoryBase):
     category_id: int
+    product_count: Optional[int] = 0
     
     class Config:
         from_attributes = True
 
 class CategoryWithSubcategories(CategoryResponse):
-    subcategories: List['CategoryWithSubcategories'] = []
+    subcategories: List['CategoryResponse'] = []
     
     class Config:
         from_attributes = True
@@ -57,22 +58,26 @@ class ProductBase(BaseModel):
     name: str
     description: Optional[str] = None
     price: float
+    original_price: float
     category_id: int
     unit: Optional[str] = None
     stock_quantity: Optional[int] = 0
     is_featured: Optional[bool] = False
 
 class ProductCreate(ProductBase):
-    images: Optional[List[ProductImageBase]] = []
+    # Không cần trường images nữa vì sẽ được xử lý thông qua form-data
+    pass
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
+    original_price: Optional[float] = None
     category_id: Optional[int] = None
     unit: Optional[str] = None
     stock_quantity: Optional[int] = None
     is_featured: Optional[bool] = None
+    # Không cần trường images nữa vì sẽ được xử lý thông qua form-data
 
 class ProductResponse(ProductBase):
     product_id: int

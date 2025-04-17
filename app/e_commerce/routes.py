@@ -18,6 +18,10 @@ import random
 import json
 import datetime
 from pydantic import BaseModel
+import logging
+
+# Tạo logger
+logger = logging.getLogger(__name__)
 
 # Custom JSON encoder to handle datetime objects
 class DateTimeEncoder(json.JSONEncoder):
@@ -76,48 +80,111 @@ async def get_subcategories_by_category(category_id: int, db: Session = Depends(
     return result
 
 @router.get("/categories-tree", response_model=List[CategoryWithSubcategories])
-async def get_categories_with_subcategories(db: Session = Depends(get_db)):
-    # Kiểm tra xem dữ liệu có trong cache không
-    cache_key = "categories:tree"
-    cached_result = await get_cache(cache_key)
-    if cached_result:
-        # Chuyển đổi từ JSON string sang danh sách CategoryWithSubcategories
-        try:
-            cached_data = json.loads(cached_result)
-            return [CategoryWithSubcategories.model_validate(item) for item in cached_data]
-        except Exception as e:
-            # Xử lý lỗi khi chuyển đổi từ cache
-            print(f"Error deserializing cached categories tree: {str(e)}")
-            # Không throw exception, tiếp tục xử lý dưới đây
-    
-    # Lấy tất cả categories từ database
-    all_categories = db.query(Category).all()
-    
-    # Tạo dictionary để mapping category_id với category object
-    category_dict = {category.category_id: CategoryWithSubcategories.model_validate(category) for category in all_categories}
-    
-    # Danh sách chứa chỉ các category cấp cao nhất (parent_id is None hoặc 0)
-    root_categories = []
-    
-    # Duyệt qua tất cả category để xây dựng cây phân cấp
-    for category_id, category in category_dict.items():
-        # Nếu là category con (có parent_id), thêm vào subcategories của parent
-        if category.parent_id:
-            if category.parent_id in category_dict:
-                category_dict[category.parent_id].subcategories.append(category)
-        # Nếu là category gốc (không có parent_id), thêm vào danh sách root_categories
-        else:
-            root_categories.append(category)
-    
-    # Lưu kết quả vào cache - cần xử lý đặc biệt vì cấu trúc phức tạp
+async def get_categories_tree(force_refresh: bool = False, db: Session = Depends(get_db)):
+    """
+    Lấy cây danh mục
+    """
     try:
-        serialized_data = json.dumps([cat.model_dump() for cat in root_categories], cls=DateTimeEncoder)
-        await set_cache(cache_key, serialized_data, expire=600)
+        # Tạo cache key
+        cache_key = "e_commerce:categories-tree"
+        
+        # Kiểm tra cache nếu không yêu cầu force refresh
+        if not force_refresh:
+            try:
+                cached_data = await get_cache(cache_key)
+                if cached_data:
+                    print("Returning categories tree from cache")
+                    return json.loads(cached_data)
+            except Exception as cache_error:
+                print(f"Cache error: {str(cache_error)}")
+        else:
+            print("Force refresh requested, skipping cache")
+        
+        # Lấy tất cả categories từ database
+        all_categories = db.query(Category).all()
+        
+        # Tạo dictionary để mapping category_id với category object
+        category_dict = {category.category_id: CategoryWithSubcategories.model_validate(category) for category in all_categories}
+        
+        # Tạo map để lưu tất cả ID của danh mục và subcategories
+        category_subcategories_map = {}
+        
+        # Hàm đệ quy để lấy tất cả ID của subcategories
+        def get_all_subcategory_ids(cat_id, subcategory_ids=None):
+            if subcategory_ids is None:
+                subcategory_ids = []
+            
+            # Lấy các subcategory trực tiếp
+            direct_subcategories = [cat for cat in all_categories if cat.parent_id == cat_id]
+            
+            # Thêm vào danh sách
+            for subcategory in direct_subcategories:
+                sub_id = subcategory.category_id
+                subcategory_ids.append(sub_id)
+                # Đệ quy để lấy các subcategory của subcategory này
+                get_all_subcategory_ids(sub_id, subcategory_ids)
+            
+            return subcategory_ids
+        
+        # Tính toán product_count cho mỗi category
+        for category_id, category in category_dict.items():
+            # Lấy tất cả ID của subcategories (bao gồm cả các subcategory lồng nhau)
+            subcategory_ids = get_all_subcategory_ids(category_id)
+            category_subcategories_map[category_id] = subcategory_ids
+            
+            # Đếm số lượng sản phẩm trực tiếp trong category này
+            direct_product_count = db.query(Product).filter(Product.category_id == category_id).count()
+            
+            # Đếm số lượng sản phẩm trong tất cả subcategories
+            subcategories_product_count = 0
+            if subcategory_ids:
+                subcategories_product_count = db.query(Product).filter(Product.category_id.in_(subcategory_ids)).count()
+            
+            # Tổng số lượng sản phẩm
+            total_product_count = direct_product_count + subcategories_product_count
+            
+            # Cập nhật product_count
+            category_dict[category_id].product_count = total_product_count
+        
+        # Danh sách chứa chỉ các category cấp cao nhất (parent_id is None hoặc 0)
+        root_categories = []
+        
+        # Duyệt qua tất cả category để xây dựng cây phân cấp
+        for category_id, category in category_dict.items():
+            # Nếu là category con (có parent_id), thêm vào subcategories của parent
+            if category.parent_id:
+                if category.parent_id in category_dict:
+                    parent_category = category_dict[category.parent_id]
+                    parent_category.subcategories.append(CategoryResponse(
+                        category_id=category.category_id,
+                        name=category.name,
+                        description=category.description,
+                        level=category.level,
+                        parent_id=category.parent_id,
+                        product_count=category.product_count
+                    ))
+            # Nếu là category gốc (không có parent_id hoặc level=1), thêm vào danh sách root_categories
+            else:
+                root_categories.append(category)
+        
+        # Lọc ra chỉ các category cấp 1 nếu danh sách không có category nào
+        if not root_categories:
+            root_categories = [cat for cat in category_dict.values() if cat.level == 1]
+            
+        # Lưu vào cache với thời gian hết hạn là 15 phút
+        try:
+            await set_cache(cache_key, json.dumps([cat.model_dump() for cat in root_categories], cls=DateTimeEncoder), 900)
+            print("Categories tree cached for 15 minutes")
+        except Exception as cache_error:
+            print(f"Failed to cache categories tree: {str(cache_error)}")
+        
+        return root_categories
     except Exception as e:
-        # Trong trường hợp serialize gặp lỗi, chỉ log và bỏ qua việc cache
-        print(f"Error serializing categories tree: {str(e)}")
-    
-    return root_categories
+        print(f"Error in get_categories_tree: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 @router.get("/products", response_model=List[ProductResponse])
 async def get_products(
