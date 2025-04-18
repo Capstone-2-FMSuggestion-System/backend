@@ -37,7 +37,10 @@ async def login(login_data: Login, db: Session = Depends(get_db)):
     else:
         # Nếu là username
         user = get_user_by_username(db, login_data.username_or_email)
-    
+        print("User login: ", user.password)
+        print("Password login: ", login_data.password)
+        print("Verify password: ", verify_password(login_data.password, user.password))
+        
     if not user or not verify_password(login_data.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

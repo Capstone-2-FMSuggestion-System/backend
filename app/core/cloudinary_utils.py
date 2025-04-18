@@ -15,10 +15,15 @@ logger = logging.getLogger(__name__)
 
 # Hàm để tạo cấu hình Cloudinary mỗi khi cần thiết
 def get_cloudinary_config():
+    # Log cấu hình để debug
+    logger.info(f"Configuring Cloudinary with cloud_name={config.CLOUDINARY_CLOUD_NAME}")
+    
+    # Cấu hình cloudinary
     cloudinary.config(
         cloud_name=config.CLOUDINARY_CLOUD_NAME,
         api_key=config.CLOUDINARY_API_KEY,
-        api_secret=config.CLOUDINARY_API_SECRET
+        api_secret=config.CLOUDINARY_API_SECRET,
+        secure=True  # Đảm bảo kết nối qua HTTPS
     )
     return cloudinary.config()
 
@@ -67,14 +72,18 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
             # Log cấu hình Cloudinary để debug
             logger.info(f"Cloudinary config: cloud_name={cloud_config.cloud_name}, api_key={cloud_config.api_key[:6]}...")
             
-            # Không dùng upload_preset vì gây lỗi "Upload preset not found"
+            # Sử dụng folder trực tiếp, không cần upload_preset
+            folder_to_use = folder if folder else config.CLOUDINARY_FOLDER
+            logger.info(f"Using folder: {folder_to_use}")
+            
             upload_result = cloudinary.uploader.upload(
                 temp_file.name,
-                folder=folder,  # Sử dụng folder trực tiếp từ tham số
+                folder=folder_to_use,
                 public_id=os.path.splitext(safe_filename)[0],
                 overwrite=True,
                 resource_type="image",
-                unique_filename=True
+                unique_filename=True,
+                upload_preset=None  # Đặt rõ ràng upload_preset=None để vô hiệu hóa
             )
             
             logger.info(f"Upload successful: {upload_result.get('public_id', 'unknown')}")

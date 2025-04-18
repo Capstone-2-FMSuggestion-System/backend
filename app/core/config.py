@@ -35,5 +35,6 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "dgmdtzsya")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "396451297575275")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "ldDZdyY8Zo-xyWr9RuJ97OCqUl4")
-CLOUDINARY_UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "data_fm")
+# Không sử dụng upload_preset để tránh lỗi "Upload preset not found"
+CLOUDINARY_UPLOAD_PRESET = None  # Không dùng upload_preset
 CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "fm_products") 
