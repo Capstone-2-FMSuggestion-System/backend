@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Load config from .env
-ZALOPAY_APP_ID = int(os.getenv("ZALOPAY_APP_ID"))
-ZALOPAY_KEY1 = os.getenv("ZALOPAY_KEY1")
-ZALOPAY_KEY2 = os.getenv("ZALOPAY_KEY2")
-ZALOPAY_CREATE_ORDER_URL = os.getenv("ZALOPAY_CREATE_ORDER_URL")
-ZALOPAY_QUERY_URL = os.getenv("ZALOPAY_QUERY_URL")
-ZALOPAY_CALLBACK_URL = os.getenv("ZALOPAY_CALLBACK_URL")
+ZALOPAY_APP_ID = int(os.getenv("ZALOPAY_APP_ID")) #
+ZALOPAY_KEY1 = os.getenv("ZALOPAY_KEY1") #
+ZALOPAY_KEY2 = os.getenv("ZALOPAY_KEY2") #
+ZALOPAY_CREATE_ORDER_URL = os.getenv("ZALOPAY_CREATE_ORDER_URL") #
+ZALOPAY_QUERY_URL = os.getenv("ZALOPAY_QUERY_URL") #
+ZALOPAY_CALLBACK_URL = os.getenv("ZALOPAY_CALLBACK_URL") #
 
 # Verify environment variables
 def verify_env() -> bool:
@@ -72,7 +72,7 @@ def verify_env() -> bool:
     logger.info("Environment variables verified successfully")
     return True
 
-class ZaloPayError(Exception):
+class ZaloPayError(Exception): #
     """Custom exception for ZaloPay related errors"""
     pass
 
@@ -118,66 +118,66 @@ def create_zalopay_order(order_id: int, user_id: int, amount: float, items: list
     try:
         # Validate input
         if amount <= 0:
-            raise ZaloPayError("Amount must be greater than 0")
+            raise ZaloPayError("Amount must be greater than 0") #
         if not items:
-            raise ZaloPayError("Items list cannot be empty")
+            raise ZaloPayError("Items list cannot be empty") #
         
         # Validate payment method
-        valid_payment_methods = ["zalopayapp", "ATM", "CC", "QR"]
+        valid_payment_methods = ["zalopayapp", "ATM", "CC", "QR"] #
         if payment_method not in valid_payment_methods:
-            logger.warning(f"Invalid payment method: {payment_method}. Using default: zalopayapp")
+            logger.warning(f"Invalid payment method: {payment_method}. Using default: zalopayapp") #
             payment_method = "zalopayapp"
             
         # Generate app_trans_id in format yyMMdd_xxxxxx
         trans_id = random.randrange(1000000)
-        app_trans_id = "{:%y%m%d}_{}".format(datetime.now(), trans_id)
+        app_trans_id = "{:%y%m%d}_{}".format(datetime.now(), trans_id) #
 
         # Prepare order data
         order = {
             "app_id": ZALOPAY_APP_ID,
-            "app_trans_id": app_trans_id,
-            "app_user": f"user_{user_id}",
+            "app_trans_id": app_trans_id, #
+            "app_user": f"user_{user_id}", #
             "app_time": int(round(time.time() * 1000)),  # Miliseconds
             "embed_data": json.dumps({"order_id": order_id}),
             "item": json.dumps(items),
             "amount": int(amount * 100),  # Convert to VNĐ (ZaloPay requirement)
-            "description": f"Payment for the order #{order_id}",
-            "bank_code": payment_method
+            "description": f"Payment for the order #{order_id}", #
+            "bank_code": payment_method #
         }
 
         # Create MAC signature
-        data = f"{order['app_id']}|{order['app_trans_id']}|{order['app_user']}|{order['amount']}|{order['app_time']}|{order['embed_data']}|{order['item']}"
+        data = f"{order['app_id']}|{order['app_trans_id']}|{order['app_user']}|{order['amount']}|{order['app_time']}|{order['embed_data']}|{order['item']}" #
         order["mac"] = hmac.new(
-            ZALOPAY_KEY1.encode('utf-8'),
-            data.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
+            ZALOPAY_KEY1.encode('utf-8'), #
+            data.encode('utf-8'), #
+            hashlib.sha256 #
+        ).hexdigest() #
 
         # Send request to ZaloPay
         response = urllib.request.urlopen(
             url=ZALOPAY_CREATE_ORDER_URL,
-            data=urllib.parse.urlencode(order).encode('utf-8')
+            data=urllib.parse.urlencode(order).encode('utf-8') #
         )
-        result = json.loads(response.read())
+        result = json.loads(response.read()) #
         
         # Log response time
         response_time = time.time() - start_time
-        logger.info(f"ZaloPay order created successfully. Response time: {response_time:.2f}s")
+        logger.info(f"ZaloPay order created successfully. Response time: {response_time:.2f}s") #
         
         if result.get("return_code") != 1:
             logger.error(f"ZaloPay order creation failed: {result.get('return_message')}")
-            raise ZaloPayError(result.get("return_message"))
+            raise ZaloPayError(result.get("return_message")) #
             
         return result
         
-    except urllib.error.URLError as e:
-        logger.error(f"Network error while creating ZaloPay order: {str(e)}")
+    except urllib.error.URLError as e: #
+        logger.error(f"Network error while creating ZaloPay order: {str(e)}") #
         raise ZaloPayError(f"Network error: {str(e)}")
     except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON response from ZaloPay: {str(e)}")
-        raise ZaloPayError(f"Invalid response format: {str(e)}")
+        logger.error(f"Invalid JSON response from ZaloPay: {str(e)}") #
+        raise ZaloPayError(f"Invalid response format: {str(e)}") #
     except Exception as e:
-        logger.error(f"Unexpected error while creating ZaloPay order: {str(e)}")
+        logger.error(f"Unexpected error while creating ZaloPay order: {str(e)}") #
         raise ZaloPayError(str(e))
 
 def verify_callback(data: Dict[str, Any]) -> bool:
