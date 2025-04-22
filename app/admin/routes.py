@@ -1499,7 +1499,7 @@ async def get_all_admin_products(
 
 @router.post("/manage/products", response_model=AdminProductResponse, status_code=201)
 async def create_admin_product(
-    file: Optional[UploadFile] = File(None),
+    files: List[UploadFile] = File(None),
     name: str = Form(...),
     description: Optional[str] = Form(None),
     price: float = Form(...),
@@ -1508,12 +1508,15 @@ async def create_admin_product(
     stock_quantity: int = Form(0),
     is_featured: bool = Form(False),
     category_id: int = Form(...),
+    is_primary: List[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Tạo sản phẩm mới với hình ảnh (chỉ admin)"""
-    check_admin(current_user)
+    """Tạo sản phẩm mới với nhiều hình ảnh (chỉ admin)"""
     try:
+        # Kiểm tra quyền admin
+        check_admin(current_user)
+        
         # Kiểm tra category_id có tồn tại không
         category = db.query(Category).filter(Category.category_id == category_id).first()
         if not category:
@@ -1530,63 +1533,81 @@ async def create_admin_product(
             is_featured=is_featured,
             category_id=category_id
         )
+        
+        # Thêm sản phẩm vào database
         db.add(db_product)
         db.flush()  # Lấy ID sản phẩm sau khi thêm vào DB
         
-        # Xử lý upload ảnh nếu có
+        # Xử lý upload nhiều ảnh nếu có
         image_urls = []
-        if file:
+        if files:
             try:
-                # Upload ảnh lên Cloudinary và lấy URL
-                result = await upload_image(file)
-                image_url = result['secure_url']
+                # Upload nhiều ảnh lên Cloudinary
+                results = await upload_multiple_images(files)
                 
-                # Thêm ảnh vào database
-                db_image = ProductImages(
-                    product_id=db_product.product_id,
-                    image_url=image_url,
-                    is_primary=True,
-                    display_order=1
-                )
-                db.add(db_image)
-                image_urls.append(image_url)
-            except Exception as upload_error:
-                # Rollback transaction nếu upload lỗi
+                # Thêm từng ảnh vào database
+                for i, result in enumerate(results):
+                    # Lấy URL từ kết quả trả về
+                    image_url = result.get('url') if isinstance(result, dict) else result
+                    
+                    # Kiểm tra xem ảnh này có phải là ảnh chính không
+                    is_primary_image = is_primary and i < len(is_primary) and is_primary[i].lower() == 'true'
+                    
+                    # Thêm ảnh vào database
+                    db_image = ProductImages(
+                        product_id=db_product.product_id,
+                        image_url=image_url,
+                        is_primary=is_primary_image,
+                        display_order=i + 1
+                    )
+                    db.add(db_image)
+                    image_urls.append(image_url)
+            except Exception as e:
                 db.rollback()
-                logger.error(f"Failed to upload image: {str(upload_error)}")
-                raise HTTPException(status_code=500, detail=f"Image upload failed: {str(upload_error)}")
+                logger.error(f"Error uploading images: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error uploading images")
         
-        db.commit()
-        db.refresh(db_product)
+        try:
+            # Commit tất cả thay đổi
+            db.commit()
+            db.refresh(db_product)
+            
+            # Lấy danh sách ảnh sau khi commit
+            images = db.query(ProductImages).filter(ProductImages.product_id == db_product.product_id).all()
+            
+            # Tạo response
+            response = {
+                "product_id": db_product.product_id,
+                "name": db_product.name,
+                "description": db_product.description,
+                "price": float(db_product.price),
+                "original_price": float(db_product.original_price),
+                "unit": db_product.unit,
+                "stock_quantity": db_product.stock_quantity,
+                "is_featured": db_product.is_featured,
+                "category_id": db_product.category_id,
+                "category_name": category.name,
+                "created_at": db_product.created_at,
+                "images": images,
+                "image_urls": [img.image_url for img in images]
+            }
+            
+            # Invalidate dashboard cache
+            await invalidate_dashboard_cache()
+            logger.info(f"Dashboard cache invalidated after creating product {db_product.product_id}")
+            
+            return response
+            
+        except Exception as commit_error:
+            db.rollback()
+            logger.error(f"Error committing product to database: {str(commit_error)}")
+            raise HTTPException(status_code=500, detail="Error saving product to database")
         
-        # Invalidate dashboard cache when a new product is created
-        await invalidate_dashboard_cache()
-        logger.info(f"Dashboard cache invalidated after creating product {db_product.product_id}")
-        
-        # Tạo đối tượng phản hồi với định dạng mới
-        response = {
-            "product_id": db_product.product_id,
-            "name": db_product.name,
-            "description": db_product.description,
-            "price": float(db_product.price),
-            "original_price": float(db_product.original_price),
-            "unit": db_product.unit,
-            "stock_quantity": db_product.stock_quantity,
-            "is_featured": db_product.is_featured,
-            "category_id": db_product.category_id,
-            "category_name": category.name if category else "N/A",
-            "created_at": db_product.created_at,
-            "image_urls": image_urls,
-            "images": db_product.images  # Giữ lại trường images để tương thích ngược
-        }
-        
-        return response
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Database error: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error creating product: {str(e)}")
+        logger.error(f"Error creating product: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/manage/products/{product_id}", response_model=AdminProductResponse)
 async def get_admin_product(
@@ -1638,7 +1659,7 @@ async def get_admin_product(
 @router.put("/manage/products/{product_id}", response_model=AdminProductResponse)
 async def update_admin_product(
     product_id: int = Path(..., gt=0),
-    file: Optional[UploadFile] = File(None),
+    files: List[UploadFile] = File(None),
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     price: Optional[float] = Form(None),
@@ -1647,117 +1668,88 @@ async def update_admin_product(
     stock_quantity: Optional[int] = Form(None),
     is_featured: Optional[bool] = Form(None),
     category_id: Optional[int] = Form(None),
+    is_primary: List[str] = Form(None),
+    delete_images: str = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Cập nhật thông tin sản phẩm với hình ảnh (chỉ admin)"""
-    check_admin(current_user)
     try:
-        # Kiểm tra sản phẩm tồn tại không
-        db_product = db.query(Product).filter(Product.product_id == product_id).first()
-        if not db_product:
-            raise HTTPException(status_code=404, detail="Product not found")
-        
-        # Kiểm tra và lấy thông tin danh mục
-        category = None
-        if category_id is not None:
-            category = db.query(Category).filter(Category.category_id == category_id).first()
-            if not category:
-                raise HTTPException(status_code=404, detail="Category not found")
-            # Cập nhật category_id
-            db_product.category_id = category_id
-        else:
-            # Lấy danh mục hiện tại nếu không cập nhật
-            category = db.query(Category).filter(Category.category_id == db_product.category_id).first()
-        
+        # Lấy sản phẩm từ database
+        product = db.query(Product).filter(Product.product_id == product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Sản phẩm không tồn tại")
+
         # Cập nhật thông tin sản phẩm
         if name is not None:
-            db_product.name = name
+            product.name = name
         if description is not None:
-            db_product.description = description
+            product.description = description
         if price is not None:
-            db_product.price = price
+            product.price = price
         if original_price is not None:
-            db_product.original_price = original_price
+            product.original_price = original_price
         if unit is not None:
-            db_product.unit = unit
+            product.unit = unit
         if stock_quantity is not None:
-            db_product.stock_quantity = stock_quantity
+            product.stock_quantity = stock_quantity
         if is_featured is not None:
-            db_product.is_featured = is_featured
-        
-        # Xử lý upload ảnh mới nếu có
-        image_urls = [img.image_url for img in db_product.images] if db_product.images else []
-        if file:
+            product.is_featured = is_featured
+        if category_id is not None:
+            product.category_id = category_id
+
+        # Xử lý xóa ảnh
+        if delete_images:
             try:
-                # Upload ảnh lên Cloudinary và lấy URL
-                result = await upload_image(file)
-                image_url = result['secure_url']
+                # Parse JSON string thành list
+                images_to_delete = json.loads(delete_images)
+                if isinstance(images_to_delete, list):
+                    # Xóa ảnh từ Cloudinary và database
+                    for image_url in images_to_delete:
+                        # Xóa từ Cloudinary
+                        public_id = extract_public_id_from_url(image_url)
+                        if public_id:
+                            await delete_image(public_id)
+                        
+                        # Xóa từ database
+                        image = db.query(ProductImages).filter(
+                            ProductImages.product_id == product_id,
+                            ProductImages.image_url == image_url
+                        ).first()
+                        if image:
+                            db.delete(image)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid delete_images format")
+
+        # Xử lý thêm ảnh mới
+        if files:
+            # Upload ảnh mới lên Cloudinary
+            uploaded_images = await upload_multiple_images(files, "fm_products")
+            
+            # Thêm ảnh mới vào database
+            for i, image_data in enumerate(uploaded_images):
+                # Lấy URL từ dữ liệu Cloudinary
+                image_url = image_data.get('url') if isinstance(image_data, dict) else image_data
+                is_primary_image = is_primary and str(i) in is_primary
                 
-                # Tìm ảnh chính hiện tại
-                primary_image = db.query(ProductImages).filter(
-                    ProductImages.product_id == product_id,
-                    ProductImages.is_primary == True
-                ).first()
-                
-                if primary_image:
-                    # Cập nhật URL cho ảnh chính
-                    primary_image.image_url = image_url
-                    # Cập nhật vị trí của primary image trong image_urls
-                    for i, url in enumerate(image_urls):
-                        if url == primary_image.image_url:
-                            image_urls[i] = image_url
-                            break
-                else:
-                    # Thêm ảnh mới nếu không có ảnh chính
-                    db_image = ProductImages(
-                        product_id=product_id,
-                        image_url=image_url,
-                        is_primary=True,
-                        display_order=1
-                    )
-                    db.add(db_image)
-                    image_urls.append(image_url)
-            except Exception as upload_error:
-                # Rollback transaction nếu upload lỗi
-                db.rollback()
-                logger.error(f"Failed to upload image: {str(upload_error)}")
-                raise HTTPException(status_code=500, detail=f"Image upload failed: {str(upload_error)}")
-        
+                new_image = ProductImages(
+                    product_id=product_id,
+                    image_url=image_url,
+                    is_primary=is_primary_image,
+                    display_order=i + 1
+                )
+                db.add(new_image)
+
+        # Commit thay đổi
         db.commit()
-        db.refresh(db_product)
-        
-        # Invalidate dashboard cache when a product is updated
-        await invalidate_dashboard_cache()
-        logger.info(f"Dashboard cache invalidated after updating product {product_id}")
-        
-        # Cập nhật lại image_urls từ database sau khi commit
-        image_urls = [img.image_url for img in db_product.images] if db_product.images else []
-        
-        # Tạo đối tượng phản hồi với định dạng mới
-        response = {
-            "product_id": db_product.product_id,
-            "name": db_product.name,
-            "description": db_product.description,
-            "price": float(db_product.price),
-            "original_price": float(db_product.original_price),
-            "unit": db_product.unit,
-            "stock_quantity": db_product.stock_quantity,
-            "is_featured": db_product.is_featured,
-            "category_id": db_product.category_id,
-            "category_name": category.name if category else "N/A",
-            "created_at": db_product.created_at,
-            "image_urls": image_urls,
-            "images": db_product.images  # Giữ lại trường images để tương thích ngược
-        }
-        
-        return response
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Database error: {str(e)}")
+        db.refresh(product)
+
+        # Lấy lại thông tin sản phẩm đã cập nhật
+        updated_product = db.query(Product).filter(Product.product_id == product_id).first()
+        return updated_product
+
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error updating product: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/manage/products/{product_id}", status_code=204)
 async def delete_admin_product(

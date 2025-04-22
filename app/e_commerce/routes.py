@@ -19,6 +19,7 @@ import json
 import datetime
 from pydantic import BaseModel
 import logging
+from sqlalchemy.sql import func
 
 # Tạo logger
 logger = logging.getLogger(__name__)
@@ -364,21 +365,92 @@ async def get_featured_products(db: Session = Depends(get_db)):
     """
     Retrieve featured products based on criteria like high ratings or manual selection
     """
-    # Try to get from cache first
-    cache_key = "products:featured"
-    cached_result = await get_cache(cache_key)
-    if cached_result:
-        return eval(cached_result)
-    
-    # Get products with rating >= 4.0 or randomly select 10 products
-    # In a real scenario, this could be based on other business logic
-    featured_products = db.query(Product).limit(10).all()
-    
-    result = [ProductResponse.from_orm(p) for p in featured_products]
-    
-    # Cache the result
-    await set_cache(cache_key, str(result), expire=300)
-    return result
+    try:
+        # Try to get from cache first
+        cache_key = "products:featured"
+        cached_result = await get_cache(cache_key)
+        if cached_result:
+            try:
+                # Parse JSON instead of using eval
+                cached_data = json.loads(cached_result)
+                return [ProductResponse.model_validate(item) for item in cached_data]
+            except Exception as e:
+                logger.error(f"Error parsing cached result: {str(e)}")
+                # Continue to fetch from database if cache parsing fails
+        
+        # Get featured products with proper error handling
+        featured_products = db.query(Product).filter(
+            Product.is_featured == True
+        ).limit(10).all()
+        
+        logger.info(f"Found {len(featured_products)} featured products")
+        
+        if not featured_products:
+            # If no featured products found, get some random products
+            featured_products = db.query(Product).order_by(
+                func.random()
+            ).limit(10).all()
+            logger.info("No featured products found, using random products instead")
+        
+        # Convert to response model with proper error handling
+        result = []
+        for product in featured_products:
+            try:
+                # Ensure all required fields have valid values
+                if not product.name or product.price is None or product.original_price is None or product.category_id is None:
+                    logger.warning(f"Product {product.product_id} is missing required fields")
+                    continue
+
+                # Convert datetime to ISO format for JSON serialization
+                product_dict = {
+                    "product_id": product.product_id,
+                    "name": product.name,
+                    "description": product.description or "",
+                    "price": float(product.price),
+                    "original_price": float(product.original_price),
+                    "category_id": product.category_id,
+                    "unit": product.unit or "piece",
+                    "stock_quantity": product.stock_quantity or 0,
+                    "is_featured": product.is_featured or False,
+                    "created_at": product.created_at if product.created_at else datetime.now(),
+                    "images": [img.image_url for img in product.images] if product.images else []
+                }
+                
+                # Log the processed product data
+                logger.info(f"Processed product data: {json.dumps(product_dict, cls=DateTimeEncoder)}")
+                
+                # Validate the product data
+                try:
+                    product_response = ProductResponse.model_validate(product_dict)
+                    result.append(product_response)
+                except Exception as e:
+                    logger.error(f"Validation error for product {product.product_id}: {str(e)}")
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Error converting product {product.product_id} to response model: {str(e)}")
+                logger.error(f"Product data that caused error: {product.__dict__}")
+                continue
+        
+        if not result:
+            logger.warning("No valid products found after processing")
+            return []
+            
+        # Cache the result with proper JSON serialization
+        try:
+            serialized_result = json.dumps([item.model_dump() for item in result], cls=DateTimeEncoder)
+            await set_cache(cache_key, serialized_result, expire=300)
+        except Exception as e:
+            logger.error(f"Error caching featured products: {str(e)}")
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in get_featured_products: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while fetching featured products"
+        )
 
 @router.get("/categories/{category_id}/subcategories-tree", response_model=CategoryWithSubcategories)
 async def get_category_with_all_subcategories(category_id: int, db: Session = Depends(get_db)):
