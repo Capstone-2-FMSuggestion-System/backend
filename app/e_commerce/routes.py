@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
-from .models import Product, Category, Orders, OrderItems, Reviews
+from .models import Product, Category, Orders, OrderItems, Reviews, ProductImages
 from ..user.models import User
 from .schemas import (
     ProductBase, ProductCreate, ProductUpdate, ProductResponse, ProductImageCreate, 
@@ -188,36 +188,41 @@ async def get_categories_tree(force_refresh: bool = False, db: Session = Depends
         )
 
 @router.get("/products", response_model=List[ProductResponse])
-async def get_products(
-    name: Optional[str] = None,
+def get_products(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 100,
     category_id: Optional[int] = None,
-    price_min: Optional[float] = None,
-    price_max: Optional[float] = None,
-    db: Session = Depends(get_db)
+    is_featured: Optional[bool] = None,
+    search: Optional[str] = None
 ):
-    # Try to get from cache first
-    cache_key = f"products:{name}:{category_id}:{price_min}:{price_max}"
-    cached_result = await get_cache(cache_key)
-    if cached_result:
-        return eval(cached_result)
-    
-    # Build query
     query = db.query(Product)
-    if name:
-        query = query.filter(Product.name.ilike(f"%{name}%"))
+    
     if category_id:
         query = query.filter(Product.category_id == category_id)
-    if price_min is not None:
-        query = query.filter(Product.price >= price_min)
-    if price_max is not None:
-        query = query.filter(Product.price <= price_max)
+    if is_featured is not None:
+        query = query.filter(Product.is_featured == is_featured)
+    if search:
+        query = query.filter(Product.name.ilike(f"%{search}%"))
     
-    products = query.all()
-    result = [ProductResponse.from_orm(p) for p in products]
+    products = query.offset(skip).limit(limit).all()
     
-    # Cache the result
-    await set_cache(cache_key, str(result), expire=300)
-    return result
+    # Eager load images for each product
+    for product in products:
+        # Convert decimal to float for price fields
+        product.price = float(product.price)
+        product.original_price = float(product.original_price)
+        
+        # Ensure stock_quantity is an integer
+        product.stock_quantity = int(product.stock_quantity)
+        
+        # Ensure is_featured is a boolean
+        product.is_featured = bool(product.is_featured)
+        
+        # Load images
+        product.images = db.query(ProductImages).filter(ProductImages.product_id == product.product_id).all()
+    
+    return products
 
 @router.get("/products/{product_id}", response_model=ProductDetailResponse)
 async def get_product(product_id: int, db: Session = Depends(get_db)):

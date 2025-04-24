@@ -46,9 +46,12 @@ class ProductImageUpdate(BaseModel):
     is_primary: Optional[bool] = None
     display_order: Optional[int] = None
 
-class ProductImageResponse(ProductImageBase):
+class ProductImageResponse(BaseModel):
     image_id: int
     product_id: int
+    image_url: str
+    is_primary: bool = False
+    display_order: int = 0
     created_at: datetime
     
     class Config:
@@ -82,7 +85,7 @@ class ProductUpdate(BaseModel):
 class ProductResponse(ProductBase):
     product_id: int
     created_at: datetime
-    images: List[str] = []
+    images: List[ProductImageResponse] = []
     
     class Config:
         from_attributes = True
@@ -98,7 +101,7 @@ class CartItemBase(BaseModel):
     quantity: int = 1
 
 class CartItemCreate(CartItemBase):
-    user_id: int
+    pass
 
 class CartItem(CartItemBase):
     cart_item_id: int
