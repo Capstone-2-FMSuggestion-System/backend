@@ -28,6 +28,7 @@ class PaymentResponse(PaymentBase):
         from_attributes = True
 
 class PaymentMethod(str, Enum):
+    COD = "COD"
     ZALOPAY_APP = "zalopayapp"
     ATM = "ATM"
     CREDIT_CARD = "CC"

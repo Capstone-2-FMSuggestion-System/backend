@@ -128,12 +128,18 @@ async def check_zalopay_status(app_trans_id: str):
     response = zalopay.query_order_status(app_trans_id)
     return response
 
-@router.get("/zalopay/payment-methods")
-async def get_zalopay_payment_methods():
+@router.get("/payment-methods")
+async def get_payment_methods():
     """
-    Get available ZaloPay payment methods with descriptions
+    Get available payment methods with descriptions
     """
     payment_methods = [
+        {
+            "id": PaymentMethod.COD.value,
+            "name": "Cash on Delivery",
+            "description": "Pay when you receive the items",
+            "icon_url": "https://example.com/cod-icon.svg"
+        },
         {
             "id": PaymentMethod.ZALOPAY_APP.value,
             "name": "ZaloPay App",
@@ -161,3 +167,31 @@ async def get_zalopay_payment_methods():
     ]
     
     return {"payment_methods": payment_methods}
+
+@router.post("/cod/create")
+async def create_cod_payment(order: OrderCreate, db: Session = Depends(get_db)):
+    # Create order in database
+    db_order = create_order(db, order)
+    if not db_order:
+        raise HTTPException(status_code=400, detail="Could not create order")
+
+    # Create payment record for COD
+    payment_data = PaymentCreate(
+        order_id=db_order.order_id,
+        amount=float(db_order.total_amount),
+        method="COD",
+        status="pending"
+    )
+    
+    db_payment = create_payment(db=db, payment=payment_data)
+    
+    # Invalidate dashboard cache to reflect new order
+    await invalidate_dashboard_cache()
+    logging.info(f"Dashboard cache invalidated after creating COD order {db_order.order_id}")
+
+    return {
+        "order_id": db_order.order_id,
+        "payment_id": db_payment.payment_id,
+        "amount": float(db_order.total_amount),
+        "status": "pending"
+    }

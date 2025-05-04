@@ -3,22 +3,20 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import create_access_token, get_current_user
 from .models import User
-from .schemas import UserCreate, Login, ForgotPassword, ResetPassword
-from ..user.crud import get_user_by_username, get_user_by_email, create_user, update_user
-from ..core.security import verify_password, get_password_hash
+from .schemas import UserCreate, Login
+from ..user.crud import get_user_by_username, get_user_by_email, create_user
+from ..core.security import verify_password
 from datetime import timedelta
 from ..core.cache import get_cache, set_cache, redis_client
 from ..user.schemas import UserUpdate
 import json
-import secrets
-from datetime import datetime, timedelta
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 @router.post("/register")
 async def register(user: UserCreate, db: Session = Depends(get_db)):
     if get_user_by_username(db, user.username):
-        raise HTTPException(status_code=400, detail="Username already registereds ")
+        raise HTTPException(status_code=400, detail="Username already registered")
     if get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     if len(user.password) < 6:
@@ -132,100 +130,5 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving user information: {str(e)}"
-        )
-
-@router.post("/forgot-password")
-async def forgot_password(request: ForgotPassword, db: Session = Depends(get_db)):
-    """
-    Endpoint để yêu cầu đặt lại mật khẩu
-    """
-    user = get_user_by_email(db, request.email)
-    if not user:
-        # Trả về thành công ngay cả khi email không tồn tại để tránh email enumeration
-        return {"message": "If your email is registered, you will receive a password reset link"}
-    
-    # Tạo reset token
-    reset_token = secrets.token_urlsafe(32)
-    token_expiry = datetime.utcnow() + timedelta(hours=1)
-    
-    # Lưu token vào cache với thời gian hết hạn 1 giờ
-    cache_key = f"password_reset:{reset_token}"
-    await set_cache(
-        cache_key,
-        json.dumps({
-            "user_id": user.user_id,
-            "email": user.email,
-            "expiry": token_expiry.isoformat()
-        }),
-        3600  # 1 hour in seconds
-    )
-    
-    # Tạo reset URL
-    reset_url = f"{request.reset_url_base}/reset-password/{reset_token}"
-    
-    # Trả về thông tin để frontend gửi email
-    return {
-        "message": "If your email is registered, you will receive a password reset link",
-        "reset_token": reset_token,
-        "reset_url": reset_url,
-        "email": user.email
-    }
-
-@router.post("/reset-password")
-async def reset_password(request: ResetPassword, db: Session = Depends(get_db)):
-    """
-    Endpoint để đặt lại mật khẩu với token
-    """
-    # Lấy thông tin từ cache
-    cache_key = f"password_reset:{request.reset_token}"
-    cached_data = await get_cache(cache_key)
-    
-    if not cached_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token"
-        )
-    
-    try:
-        token_data = json.loads(cached_data)
-        expiry = datetime.fromisoformat(token_data["expiry"])
-        
-        # Kiểm tra token hết hạn
-        if datetime.utcnow() > expiry:
-            await redis_client.delete(cache_key)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Reset token has expired"
-            )
-        
-        # Kiểm tra mật khẩu mới
-        if len(request.new_password) < 6:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password must be at least 6 characters"
-            )
-        
-        # Cập nhật mật khẩu
-        user = db.query(User).filter(User.user_id == token_data["user_id"]).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        # Hash mật khẩu mới
-        hashed_password = get_password_hash(request.new_password)
-        user.password = hashed_password
-        db.commit()
-        
-        # Xóa token khỏi cache
-        await redis_client.delete(cache_key)
-        
-        return {"message": "Password has been reset successfully"}
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error resetting password: {str(e)}"
         )
 
