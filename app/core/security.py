@@ -49,4 +49,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     >>> is_valid = verify_password("mat_khau_123", hashed)
     >>> # is_valid sẽ là True
     """
-    return pwd_context.verify(plain_password, hashed_password) 
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password) 
