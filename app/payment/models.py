@@ -1,6 +1,7 @@
 # Đây là file models.py cho module payment
 
-from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, text
+from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, text, JSON
+from sqlalchemy.orm import relationship
 from ..core.database import Base
 
 # Import models từ các module cần thiết
@@ -13,8 +14,13 @@ class Payments(Base):
     amount = Column(DECIMAL(10, 2), nullable=False)
     method = Column(String(50))
     status = Column(String(20), default="pending")
-    zp_trans_id = Column(String(50), nullable=True)
+    transaction_id = Column(String(100), nullable=True)
+    payment_data = Column(JSON, nullable=True)  # Store PayOS payment data
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
+
+    # Relationships
+    order = relationship("Orders", back_populates="payments")
 
 # Import các model cần thiết sau khi định nghĩa model Payments
 from ..e_commerce.models import Orders, Product

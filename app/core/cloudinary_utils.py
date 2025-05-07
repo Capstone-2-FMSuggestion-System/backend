@@ -23,7 +23,12 @@ def get_cloudinary_config():
         cloud_name=config.CLOUDINARY_CLOUD_NAME,
         api_key=config.CLOUDINARY_API_KEY,
         api_secret=config.CLOUDINARY_API_SECRET,
-        secure=True  # Đảm bảo kết nối qua HTTPS
+        secure=True,  # Đảm bảo kết nối qua HTTPS
+        private_cdn=False,  # Không sử dụng private CDN
+        cname=None,  # Không sử dụng custom domain
+        use_root_path=False,  # Không sử dụng root path
+        shorten=True,  # Cho phép rút gọn URL
+        type="upload"  # Mặc định type là upload
     )
     return cloudinary.config()
 
@@ -35,35 +40,25 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
     Upload một hình ảnh lên Cloudinary
     
     Args:
-        file (UploadFile): File ảnh cần upload
+        file (UploadFile): File cần upload
         folder (str, optional): Thư mục lưu trữ
         
     Returns:
-        dict: Kết quả từ Cloudinary
+        dict: Kết quả upload từ Cloudinary
     """
-    # Kiểm tra kiểu file
-    if not file.content_type.startswith('image/'):
-        raise ValueError("Chỉ chấp nhận file hình ảnh (image/*)")
-    
-    # Tạo tên file an toàn
-    filename = file.filename
-    safe_filename = re.sub(r'[^\w\-\.]', '-', filename)
-    
     # Tạo temporary file
     temp_file = None
-    
     try:
+        # Lưu file tạm thời
         temp_file = tempfile.NamedTemporaryFile(delete=False)
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.flush()
         
-        # Đọc và ghi vào temporary file
-        try:
-            content = await file.read()
-            with open(temp_file.name, 'wb') as out_file:
-                out_file.write(content)
-        except Exception as e:
-            raise ValueError(f"Lỗi khi đọc/ghi file tạm: {str(e)}")
+        # Tạo tên file an toàn
+        safe_filename = re.sub(r'[^a-zA-Z0-9.-]', '_', file.filename)
         
-        # Tạo lại cấu hình Cloudinary mỗi khi upload để đảm bảo kết nối
+        # Lấy cấu hình Cloudinary
         cloud_config = get_cloudinary_config()
         
         # Upload lên Cloudinary
@@ -83,7 +78,15 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
                 overwrite=True,
                 resource_type="image",
                 unique_filename=True,
-                upload_preset=None  # Đặt rõ ràng upload_preset=None để vô hiệu hóa
+                upload_preset=None,  # Đặt rõ ràng upload_preset=None để vô hiệu hóa
+                type="upload",  # Đảm bảo type là "upload" để public
+                access_mode="public",  # Đảm bảo access mode là public
+                invalidate=True,  # Xóa cache khi upload lại
+                use_filename=True,  # Sử dụng tên file gốc
+                unique_display_name=True,  # Tên hiển thị duy nhất
+                discard_original_filename=False,  # Giữ tên file gốc
+                use_asset_folder_as_public_id_prefix=True,  # Sử dụng asset folder làm prefix
+                asset_folder=folder_to_use  # Đặt asset folder
             )
             
             logger.info(f"Upload successful: {upload_result.get('public_id', 'unknown')}")
@@ -107,7 +110,7 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
                 os.unlink(temp_file.name)
             except:
                 pass
-        
+
 async def upload_multiple_images(files: List[UploadFile], folder: Optional[str] = None) -> List[dict]:
     """
     Upload nhiều hình ảnh lên Cloudinary

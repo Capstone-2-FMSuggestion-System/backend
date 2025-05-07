@@ -64,6 +64,9 @@ class Orders(Base):
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
 
+    # Relationships
+    payments = relationship("Payments", back_populates="order")
+
 class OrderItems(Base):
     __tablename__ = "order_items"
     order_item_id = Column(Integer, primary_key=True, index=True)

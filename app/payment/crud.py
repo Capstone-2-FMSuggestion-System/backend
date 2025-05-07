@@ -1,79 +1,91 @@
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from .models import Payments, Orders
-from .schemas import PaymentCreate, PaymentUpdate
+from .schemas import PaymentCreate, PaymentUpdate, PaymentMethod
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def create_payment(db: Session, payment: PaymentCreate) -> Payments:
     """
-    Tên Function: create_payment
-    
-    1. Mô tả ngắn gọn:
-    Tạo một giao dịch thanh toán mới.
-    
-    2. Mô tả công dụng:
-    Tạo một bản ghi thanh toán mới trong cơ sở dữ liệu cho một đơn hàng.
-    Ghi lại thông tin về phương thức thanh toán, số tiền và trạng thái ban đầu
-    là "pending" (đang chờ).
+    Create a new payment record.
     """
-    db_payment = Payments(
-        order_id=payment.order_id,
-        amount=payment.amount,
-        method=payment.method,
-        status="pending"
-    )
-    db.add(db_payment)
-    db.commit()
-    db.refresh(db_payment)
-    return db_payment
+    try:
+        db_payment = Payments(
+            order_id=payment.order_id,
+            amount=payment.amount,
+            method=payment.method,
+            status="pending",
+            transaction_id=payment.transaction_id
+        )
+        db.add(db_payment)
+        db.commit()
+        db.refresh(db_payment)
+        logger.info(f"Created payment record for order {payment.order_id}")
+        return db_payment
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating payment: {str(e)}")
+        raise
 
-def update_payment_status(db: Session, payment_id: int, status: str, zp_trans_id: Optional[str] = None) -> Optional[Payments]:
+def update_payment_status(
+    db: Session, 
+    payment_id: int, 
+    status: str, 
+    transaction_id: Optional[str] = None,
+    payment_data: Optional[Dict[str, Any]] = None
+) -> Optional[Payments]:
     """
-    Tên Function: update_payment_status
-    
-    1. Mô tả ngắn gọn:
-    Cập nhật trạng thái thanh toán và mã giao dịch ZaloPay.
-    
-    2. Mô tả công dụng:
-    Cập nhật trạng thái và mã giao dịch của một thanh toán trong cơ sở dữ liệu.
-    Thường được sử dụng sau khi nhận được phản hồi từ cổng thanh toán ZaloPay
-    để cập nhật trạng thái giao dịch (thành công, thất bại, etc.).
+    Update payment status and related information.
     """
-    db_payment = db.query(Payments).filter(Payments.payment_id == payment_id).first()
-    if not db_payment:
-        return None
-    
-    db_payment.status = status
-    if zp_trans_id:
-        db_payment.zp_trans_id = zp_trans_id
-    
-    db.commit()
-    db.refresh(db_payment)
-    return db_payment
+    try:
+        db_payment = db.query(Payments).filter(Payments.payment_id == payment_id).first()
+        if not db_payment:
+            return None
+        
+        db_payment.status = status
+        if transaction_id:
+            db_payment.transaction_id = transaction_id
+        if payment_data:
+            db_payment.payment_data = payment_data
+        db_payment.updated_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(db_payment)
+        logger.info(f"Updated payment {payment_id} status to {status}")
+        return db_payment
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating payment status: {str(e)}")
+        raise
 
 def get_payment(db: Session, payment_id: int) -> Optional[Payments]:
     """
-    Tên Function: get_payment
-    
-    1. Mô tả ngắn gọn:
-    Lấy thông tin giao dịch thanh toán theo ID.
-    
-    2. Mô tả công dụng:
-    Truy vấn cơ sở dữ liệu để lấy thông tin chi tiết của một giao dịch thanh toán
-    dựa trên ID. Thường được sử dụng khi cần kiểm tra thông tin hoặc trạng thái
-    của một giao dịch thanh toán cụ thể.
+    Get payment by ID.
     """
     return db.query(Payments).filter(Payments.payment_id == payment_id).first()
 
 def get_payment_by_order(db: Session, order_id: int) -> Optional[Payments]:
     """
-    Tên Function: get_payment_by_order
-    
-    1. Mô tả ngắn gọn:
-    Lấy thông tin thanh toán theo ID đơn hàng.
-    
-    2. Mô tả công dụng:
-    Truy vấn cơ sở dữ liệu để lấy thông tin thanh toán của một đơn hàng cụ thể.
-    Thường được sử dụng khi cần kiểm tra trạng thái thanh toán của đơn hàng
-    hoặc để xác nhận xem đơn hàng đã được thanh toán chưa.
+    Get payment by order ID.
     """
-    return db.query(Payments).filter(Payments.order_id == order_id).first() 
+    return db.query(Payments).filter(Payments.order_id == order_id).first()
+
+def get_payment_by_transaction(db: Session, transaction_id: str) -> Optional[Payments]:
+    """
+    Get payment by transaction ID.
+    """
+    return db.query(Payments).filter(Payments.transaction_id == transaction_id).first()
+
+def get_payments_by_status(db: Session, status: str) -> List[Payments]:
+    """
+    Get all payments with specific status.
+    """
+    return db.query(Payments).filter(Payments.status == status).all()
+
+def get_payments_by_method(db: Session, method: str) -> List[Payments]:
+    """
+    Get all payments with specific payment method.
+    """
+    return db.query(Payments).filter(Payments.method == method).all()

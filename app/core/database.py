@@ -8,7 +8,7 @@ load_dotenv()
 
 # Lấy thông tin kết nối từ biến môi trường
 DB_USER = os.getenv("DB_USER", "family_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "123456789")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "1711Chin_nh2410")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "3306") 
 DB_NAME = os.getenv("DB_NAME", "family_menu_db")
