@@ -1,8 +1,10 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, text, JSON
-from sqlalchemy.orm import relationship
-from app.core.database import Base
+# Đây là file models.py cho module payment
 
-from ..e_commerce.models import Orders, Product
+from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, text
+from ..core.database import Base
+from sqlalchemy.orm import relationship
+# Import models từ các module cần thiết
+from ..user.models import User
 
 class Payments(Base):
     __tablename__ = "payments"
@@ -11,9 +13,8 @@ class Payments(Base):
     amount = Column(DECIMAL(10, 2), nullable=False)
     method = Column(String(50))
     status = Column(String(20), default="pending")
-    transaction_id = Column(String(100), nullable=True)
-    payment_data = Column(JSON, nullable=True)
+    zp_trans_id = Column(String(50), nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
-    updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-    order = relationship("Orders", back_populates="payments")
+    
+# Import các model cần thiết sau khi định nghĩa model Payments
+from ..e_commerce.models import Orders, Product

@@ -65,7 +65,7 @@ class Orders(Base):
     updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
 
     # Relationships
-    payments = relationship("Payments", back_populates="order")
+    payments = relationship("Payments", backref="order")
 
 class OrderItems(Base):
     __tablename__ = "order_items"
