@@ -6,10 +6,10 @@ from ..core.invalidation_helpers import invalidate_dashboard_cache
 from .models import User, Orders, Payments
 from ..e_commerce.models import Product
 from ..e_commerce.schemas import OrderCreate
-from .schemas import ZaloPayOrderResponse, ZaloPayCallback, PaymentCreate, PaymentMethod
+from .schemas import PaymentCreate, PaymentMethod
 from .crud import create_payment, update_payment_status
 from ..e_commerce.crud import create_order, update_order_status
-from . import zalopay
+from . import payos
 import json
 import ipaddress
 import random
@@ -18,16 +18,16 @@ import logging
 
 router = APIRouter(prefix="/api/payments", tags=["Payments"])
 
-@router.post("/zalopay/create", response_model=ZaloPayOrderResponse)
-async def create_zalopay_payment(order: OrderCreate, payment_method: PaymentMethod = PaymentMethod.ZALOPAY_APP, db: Session = Depends(get_db)):
+@router.post("/payos/create")
+async def create_payos_payment(order: OrderCreate, db: Session = Depends(get_db)):
     # Create order in database
     db_order = create_order(db, order)
     if not db_order:
         raise HTTPException(status_code=400, detail="Could not create order")
 
-    # Prepare items for ZaloPay
+    # Chỉ lấy items, không dùng cart_items
     items = []
-    for item in order.cart_items:
+    for item in order.items:
         product = db.query(Product).filter(Product.product_id == item.product_id).first()
         if product:
             items.append({
@@ -37,95 +37,93 @@ async def create_zalopay_payment(order: OrderCreate, payment_method: PaymentMeth
                 "quantity": item.quantity
             })
 
-    # Call ZaloPay to create order with specified payment method
-    response = zalopay.create_zalopay_order(
+    # Validate tổng tiền
+    item_total = sum(float(i["price"]) * int(i["quantity"]) for i in items)
+    if int(order.total_amount) != int(item_total):
+        raise HTTPException(status_code=400, detail=f"Tổng tiền không khớp: {order.total_amount} vs {item_total}")
+
+    # Call PayOS to create order
+    response = payos.create_payos_order(
         order_id=db_order.order_id,
         user_id=order.user_id,
         amount=float(db_order.total_amount),
-        items=items,
-        payment_method=payment_method.value
+        items=items
     )
 
-    # Check ZaloPay response
-    if response.get("return_code") != 1:
-        raise HTTPException(status_code=400, detail=response.get("return_message", "Could not create ZaloPay order"))
+    # Check PayOS response
+    if response.get("status") != "success":
+        raise HTTPException(status_code=400, detail=response.get("message", "Could not create PayOS order"))
 
-    # Tạo đối tượng PaymentCreate
+    # Create payment record
     payment_data = PaymentCreate(
         order_id=db_order.order_id,
         amount=float(db_order.total_amount),
-        method=f"zalopay_{payment_method.value}"
+        method="payos"
     )
-    
-    # Gọi hàm create_payment với đối tượng PaymentCreate
     db_payment = create_payment(db=db, payment=payment_data)
-    
-    # Cập nhật zp_trans_id nếu có
-    if response.get("zp_trans_id"):
+
+    # Update order code if exists
+    if response.get("order_code"):
         update_payment_status(
             db=db, 
             payment_id=db_payment.payment_id, 
             status="pending", 
-            zp_trans_id=response.get("zp_trans_id")
+            zp_trans_id=response.get("order_code")
         )
-
-    # Lấy app_trans_id từ response hoặc tạo mới nếu không có
-    app_trans_id = response.get("app_trans_id")
-    
-    # Nếu không có app_trans_id trong response, tạo một giá trị mặc định
-    if not app_trans_id:
-        # Tạo app_trans_id theo định dạng yyMMdd_xxxxxx
-        trans_id = random.randrange(1000000)
-        app_trans_id = "{:%y%m%d}_{}".format(datetime.now(), trans_id)
-        logging.warning(f"app_trans_id not found in ZaloPay response, using generated value: {app_trans_id}")
 
     # Invalidate dashboard cache to reflect new order
     await invalidate_dashboard_cache()
     logging.info(f"Dashboard cache invalidated after creating order {db_order.order_id}")
 
     return {
-        "order_url": response.get("order_url"),
-        "zp_trans_id": response.get("zp_trans_id"),
-        "app_trans_id": app_trans_id,
-        "payment_method": payment_method
+        "payment_url": response.get("payment_url"),
+        "order_code": response.get("order_code"),
+        "status": response.get("status"),
+        "message": response.get("message")
     }
 
-@router.post("/zalopay/callback")
-async def zalopay_callback(callback_data: ZaloPayCallback, request: Request, db: Session = Depends(get_db)):
+@router.post("/payos/callback")
+async def payos_callback(request: Request, db: Session = Depends(get_db)):
+    # Get the raw request body
+    body = await request.json()
+    
     # Verify callback signature
-    if not zalopay.verify_callback(callback_data.dict()):
-        return {"return_code": -1, "return_message": "mac not equal"}
+    if not payos.verify_callback(body):
+        return {"status": "error", "message": "Invalid signature"}
 
     try:
         # Parse callback data
-        data = json.loads(callback_data.data)
-        app_trans_id = data.get("app_trans_id")
-        zp_trans_id = data.get("zp_trans_id")
-        embed_data = json.loads(data.get("embed_data", "{}"))
-        order_id = embed_data.get("order_id")
+        data = body.get("data", {})
+        order_code = data.get("order_code")
+        status = data.get("status")
+        
+        # Find payment by order_code (saved in zp_trans_id field)
+        db_payment = db.query(Payments).filter(Payments.zp_trans_id == order_code).first()
+        if not db_payment:
+            return {"status": "error", "message": "Payment not found"}
+            
+        # Get order
+        db_order = db.query(Orders).filter(Orders.order_id == db_payment.order_id).first()
+        if not db_order:
+            return {"status": "error", "message": "Order not found"}
 
         # Update order status
-        db_order = update_order_status(db, order_id=order_id, status="completed")
-        if not db_order:
-            return {"return_code": 0, "return_message": "Order not found"}
-
+        db_order = update_order_status(db, order_id=db_order.order_id, status="completed")
+        
         # Update payment status
-        db_payment = db.query(Payments).filter(Payments.order_id == order_id).first()
-        if db_payment:
-            update_payment_status(db, payment_id=db_payment.payment_id, status="completed", zp_trans_id=zp_trans_id)
+        update_payment_status(db, payment_id=db_payment.payment_id, status="completed", zp_trans_id=order_code)
         
         # Invalidate dashboard cache when order is completed
         await invalidate_dashboard_cache()
-        logging.info(f"Dashboard cache invalidated after completing order {order_id}")
+        logging.info(f"Dashboard cache invalidated after completing order {db_order.order_id}")
 
-        print(f"update order's status = success where app_trans_id = {app_trans_id}")
-        return {"return_code": 1, "return_message": "success"}
+        return {"status": "success", "message": "Callback processed successfully"}
     except Exception as e:
-        return {"return_code": 0, "return_message": str(e)}
+        return {"status": "error", "message": str(e)}
 
-@router.get("/zalopay/status/{app_trans_id}")
-async def check_zalopay_status(app_trans_id: str):
-    response = zalopay.query_order_status(app_trans_id)
+@router.get("/payos/status/{order_code}")
+async def check_payos_status(order_code: str):
+    response = payos.query_order_status(order_code)
     return response
 
 @router.get("/payment-methods")
@@ -136,33 +134,15 @@ async def get_payment_methods():
     payment_methods = [
         {
             "id": PaymentMethod.COD.value,
-            "name": "Cash on Delivery",
-            "description": "Pay when you receive the items",
+            "name": "Thanh toán khi nhận hàng",
+            "description": "Thanh toán tiền mặt khi nhận hàng",
             "icon_url": "https://example.com/cod-icon.svg"
         },
         {
-            "id": PaymentMethod.ZALOPAY_APP.value,
-            "name": "ZaloPay App",
-            "description": "Pay directly with ZaloPay app",
-            "icon_url": "https://zalopay.vn/assets/images/logo.svg"
-        },
-        {
-            "id": PaymentMethod.ATM.value,
-            "name": "ATM Card",
-            "description": "Pay with ATM card (domestic bank cards)",
-            "icon_url": "https://zalopay.vn/assets/images/atm-icon.svg"
-        },
-        {
-            "id": PaymentMethod.CREDIT_CARD.value,
-            "name": "Credit Card",
-            "description": "Pay with Visa, Mastercard, JCB",
-            "icon_url": "https://zalopay.vn/assets/images/cc-icon.svg"
-        },
-        {
-            "id": PaymentMethod.QR_CODE.value,
-            "name": "QR Code",
-            "description": "Scan QR code to pay",
-            "icon_url": "https://zalopay.vn/assets/images/qr-icon.svg"
+            "id": "payos",
+            "name": "PayOS",
+            "description": "Thanh toán trực tuyến qua PayOS",
+            "icon_url": "https://payos.vn/assets/images/logo.svg"
         }
     ]
     
@@ -189,9 +169,20 @@ async def create_cod_payment(order: OrderCreate, db: Session = Depends(get_db)):
     await invalidate_dashboard_cache()
     logging.info(f"Dashboard cache invalidated after creating COD order {db_order.order_id}")
 
+    # Trả về toàn bộ thông tin đơn hàng vừa tạo
     return {
         "order_id": db_order.order_id,
-        "payment_id": db_payment.payment_id,
-        "amount": float(db_order.total_amount),
-        "status": "pending"
+        "user_id": db_order.user_id,
+        "total_amount": float(db_order.total_amount),
+        "status": db_order.status,
+        "payment_method": db_order.payment_method,
+        "created_at": db_order.created_at,
+        "updated_at": db_order.updated_at,
+        "recipient_name": db_order.recipient_name,
+        "recipient_phone": db_order.recipient_phone,
+        "shipping_address": db_order.shipping_address,
+        "shipping_city": db_order.shipping_city,
+        "shipping_province": db_order.shipping_province,
+        "shipping_postal_code": db_order.shipping_postal_code,
+        "payment_id": db_payment.payment_id
     }

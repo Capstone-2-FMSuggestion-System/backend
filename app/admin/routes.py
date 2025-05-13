@@ -353,6 +353,7 @@ async def get_recent_orders(
         orders_list.append({
             "order_id": order.order_id,
             "user_name": user_name,
+            "receiver_name": order.recipient_name,  # Thêm dòng này
             "total_amount": float(order.total_amount),
             "status": order.status,
             "created_at": order.created_at
@@ -2028,9 +2029,7 @@ async def get_admin_orders(
         # Bắt đầu truy vấn cơ bản
         query = db.query(
             Orders,
-            User.full_name.label("customer_name"),
-            User.phone_number,
-            User.email
+            User.full_name.label("customer_name")
         ).join(User, Orders.user_id == User.user_id)
         
         # Áp dụng bộ lọc theo trạng thái
@@ -2073,35 +2072,22 @@ async def get_admin_orders(
         
         # Xử lý dữ liệu trả về
         orders_list = []
-        for order, customer_name, phone_number, email in results:
-            # Lấy thông tin sản phẩm của đơn hàng này
-            product_info = db.query(
-                OrderItems.order_item_id,
-                Product.name.label("product_name"),
-                OrderItems.quantity,
-                OrderItems.price
-            ).join(
-                Product, OrderItems.product_id == Product.product_id
-            ).filter(
-                OrderItems.order_id == order.order_id
-            ).all()
-            
-            # Tạo chuỗi tên sản phẩm
-            product_names = ", ".join([p.product_name for p in product_info])
-            
-            # Thêm vào danh sách
+        for order, customer_name in results:
             orders_list.append({
-                "id": order.order_id,
-                "product_name": product_names,
-                "customer_name": customer_name,
-                "phone_number": phone_number,
-                "email": email,
-                "address": "100 Main St, NYC, NY, USA",  # Giả định - cần thêm cột địa chỉ vào bảng đơn hàng
+                "order_id": order.order_id,
+                "user_id": order.user_id,
                 "total_amount": float(order.total_amount),
-                "shipping_method": "Nhanh" if order.order_id % 2 == 0 else "Tiêu chuẩn",  # Giả định - cần thêm cột shipping_method vào bảng
-                "is_prepaid": order.payment_method == "Prepaid",  # Giả định dựa trên payment_method
+                "status": order.status,
+                "payment_method": order.payment_method,
                 "created_at": order.created_at,
-                "status": order.status
+                "updated_at": order.updated_at,
+                "recipient_name": order.recipient_name,
+                "recipient_phone": order.recipient_phone,
+                "shipping_address": order.shipping_address,
+                "shipping_city": order.shipping_city,
+                "shipping_province": order.shipping_province,
+                "shipping_postal": getattr(order, "shipping_postal", ""),
+                "customer_name": customer_name
             })
         
         return {

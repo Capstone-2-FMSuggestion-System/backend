@@ -125,6 +125,12 @@ class OrderBase(BaseModel):
     total_amount: float
     payment_method: Optional[str] = None
     status: str = "pending"
+    recipient_name: Optional[str] = None
+    recipient_phone: Optional[str] = None
+    shipping_address: Optional[str] = None
+    shipping_city: Optional[str] = None
+    shipping_province: Optional[str] = None
+    shipping_postal_code: Optional[str] = None
 
 class OrderCreate(OrderBase):
     items: List[OrderItemCreate]
