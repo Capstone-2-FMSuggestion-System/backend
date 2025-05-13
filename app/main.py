@@ -54,7 +54,7 @@ def health_check():
 
 # Include routers
 app.include_router(auth_router) #
-app.include_router(payment_router) #
+app.include_router(payment_router, prefix="/api")
 app.include_router(user_router) #
 app.include_router(inventory_router) #
 app.include_router(admin_router) #

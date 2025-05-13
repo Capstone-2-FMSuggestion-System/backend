@@ -1,6 +1,33 @@
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+from dotenv import load_dotenv
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+class Settings(BaseSettings):
+    # Database settings
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    
+    # PayOS settings
+    PAYOS_CLIENT_ID: str = os.getenv("PAYOS_CLIENT_ID", "")
+    PAYOS_API_KEY: str = os.getenv("PAYOS_API_KEY", "")
+    PAYOS_CHECKSUM_KEY: str = os.getenv("PAYOS_CHECKSUM_KEY", "")
+    PAYOS_CALLBACK_URL: str = os.getenv("PAYOS_CALLBACK_URL", "")
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+        
+        extra = "allow"
+
+@lru_cache()
+def get_settings():
+    return Settings()
+
+settings = get_settings()
 
 # Tìm file .env
 env_path = Path(__file__).parent.parent.parent / '.env'
