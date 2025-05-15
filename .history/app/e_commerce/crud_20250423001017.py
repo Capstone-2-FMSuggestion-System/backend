@@ -68,13 +68,7 @@ def create_order(db: Session, order: OrderCreate) -> Orders:
         user_id=order.user_id,
         total_amount=total_amount,
         status="pending",
-        payment_method=order.payment_method,
-        recipient_name=order.recipient_name,
-        recipient_phone=order.recipient_phone,
-        shipping_address=order.shipping_address,
-        shipping_city=order.shipping_city,
-        shipping_province=order.shipping_province,
-        shipping_postal_code=order.shipping_postal_code
+        payment_method=order.payment_method
     )
     db.add(db_order)
     db.commit()

@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, TIMESTAMP, text
 from ..core.database import Base
-
+from sqlalchemy.orm import relationship
 # Import models từ các module cần thiết
 from ..user.models import User
 
@@ -15,6 +15,7 @@ class Payments(Base):
     status = Column(String(20), default="pending")
     zp_trans_id = Column(String(50), nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
-
+    
+    order = relationship("Orders", back_populates="payment")
 # Import các model cần thiết sau khi định nghĩa model Payments
-from ..e_commerce.models import Orders, Product
+from ..e_commerce.models import Orders, Product, OrderItems

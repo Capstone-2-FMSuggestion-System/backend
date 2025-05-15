@@ -193,3 +193,26 @@ Kiểm tra ReDoc:
 ```
 http://localhost:8000/redoc
 ```
+
+## Cấu hình PayOS
+
+### Đăng ký tài khoản PayOS
+
+1. Truy cập [PayOS Developer Portal](https://developer.payos.vn/) và đăng ký tài khoản nhà phát triển
+2. Tạo ứng dụng mới và lấy thông tin Client ID, API Key và Checksum Key
+3. Cấu hình URL callback trong trang PayOS Developer Portal: `https://your-domain.com/payment/payos-callback`
+
+### Cấu hình biến môi trường
+
+Thêm các biến môi trường sau vào file `.env` hoặc `docker-compose.yml`:
+
+```
+PAYOS_CLIENT_ID=your-payos-client-id
+PAYOS_API_KEY=your-payos-api-key
+PAYOS_CHECKSUM_KEY=your-payos-checksum-key
+FRONTEND_URL=http://localhost:3000
+```
+
+### Kiểm tra cấu hình
+
+Sau khi cấu hình, bạn có thể kiểm tra tích hợp PayOS bằng cách thực hiện thanh toán thử nghiệm với tài khoản sandbox.
