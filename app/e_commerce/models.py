@@ -71,6 +71,7 @@ class Orders(Base):
     shipping_province = Column(String(64))
     shipping_postal_code = Column(String(16))
     items = relationship("OrderItems", back_populates="order")
+    payment = relationship("Payments", back_populates="order", uselist=False)
 
 class OrderItems(Base):
     __tablename__ = "order_items"
