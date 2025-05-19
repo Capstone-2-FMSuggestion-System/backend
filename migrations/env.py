@@ -18,8 +18,8 @@ if config.config_file_name is not None:
 
 # Thêm các biến môi trường vào cấu hình Alembic
 section = config.config_ini_section
-config.set_section_option(section, "DB_USER", os.getenv("DB_USER", "root"))
-config.set_section_option(section, "DB_PASSWORD", os.getenv("DB_PASSWORD", "12345"))
+config.set_section_option(section, "DB_USER", os.getenv("DB_USER", "family_user"))
+config.set_section_option(section, "DB_PASSWORD", os.getenv("DB_PASSWORD", "123456789"))
 config.set_section_option(section, "DB_HOST", os.getenv("DB_HOST", "localhost"))
 config.set_section_option(section, "DB_PORT", os.getenv("DB_PORT", "3306"))
 config.set_section_option(section, "DB_NAME", os.getenv("DB_NAME", "family_menu_db"))

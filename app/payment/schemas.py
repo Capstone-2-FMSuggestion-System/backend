@@ -1,10 +1,11 @@
 # Đây là file schemas.py cho module payment
 # Định nghĩa trực tiếp các schema thay vì import từ schemas.py gốc
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
+from decimal import Decimal
 
 class PaymentBase(BaseModel):
     order_id: int
@@ -28,6 +29,7 @@ class PaymentResponse(PaymentBase):
         from_attributes = True
 
 class PaymentMethod(str, Enum):
+    COD = "COD"
     ZALOPAY_APP = "zalopayapp"
     ATM = "ATM"
     CREDIT_CARD = "CC"

@@ -4,11 +4,11 @@ from ..core.database import get_db
 from ..core.auth import get_current_user
 from .models import User
 from .schemas import UserUpdate, AvatarUpdate
+from ..e_commerce.schemas import CartItemCreate, CartItem, ProductResponse, ProductImageResponse
 from .crud import get_user_by_username, get_user, create_user, update_user, delete_user, get_users
 
 # Import từ module e_commerce
-from ..e_commerce.models import Product, CartItems, Orders, OrderItems 
-from ..e_commerce.schemas import ProductResponse, CartItem, OrderCreate, OrderResponse
+from ..e_commerce.models import Product, CartItems, Orders, OrderItems, ProductImages
 from ..e_commerce.crud import get_products, get_product, create_cart_item, get_cart_item, update_cart_item, delete_cart_item
 
 # Import các module khác cần thiết
@@ -18,6 +18,8 @@ from typing import List
 import os
 import re
 import logging
+import json
+from datetime import datetime
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
@@ -193,7 +195,7 @@ async def update_user_avatar(
             detail=f"Failed to upload avatar: {str(e)}"
         )
 
-@router.get("/cart", response_model=List[dict])
+@router.get("/cart", response_model=List[CartItem])
 async def get_cart_items(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Tạo cache key dựa trên user_id
     cache_key = f"user_cart:{current_user.user_id}"
@@ -201,30 +203,71 @@ async def get_cart_items(current_user: User = Depends(get_current_user), db: Ses
     # Kiểm tra xem giỏ hàng đã được cache chưa
     cached_data = await get_cache(cache_key)
     if cached_data:
-        return eval(cached_data)
+        try:
+            # Sử dụng json.loads thay vì eval để an toàn hơn
+            return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error parsing cached cart data: {str(e)}")
+            # Nếu có lỗi khi parse cache, tiếp tục lấy dữ liệu mới
     
     # Nếu chưa có trong cache, lấy thông tin từ database
     cart_items = db.query(CartItems).filter(CartItems.user_id == current_user.user_id).all()
     result = []
     for item in cart_items:
         product = db.query(Product).filter(Product.product_id == item.product_id).first()
-        result.append({
+        if not product:
+            continue
+            
+        # Lấy tất cả ảnh của sản phẩm
+        product_images = db.query(ProductImages).filter(
+            ProductImages.product_id == item.product_id
+        ).all()
+        
+        # Tạo danh sách ảnh với đầy đủ thông tin
+        images = []
+        for img in product_images:
+            image_data = {
+                "image_id": img.image_id,
+                "product_id": img.product_id,
+                "image_url": img.image_url,
+                "is_primary": img.is_primary,
+                "created_at": img.created_at.isoformat() if img.created_at else None
+            }
+            images.append(image_data)
+        
+        # Tạo đối tượng cart_item với cấu trúc đúng
+        cart_item = {
             "cart_item_id": item.cart_item_id,
             "product_id": item.product_id,
-            "product_name": product.name,
             "quantity": item.quantity,
-            "price": float(product.price),
-            "total": float(product.price * item.quantity)
-        })
+            "user_id": item.user_id,
+            "added_at": item.added_at.isoformat() if item.added_at else None,
+            "product": {
+                "product_id": product.product_id,
+                "name": product.name,
+                "description": product.description,
+                "price": float(product.price),
+                "original_price": float(product.original_price) if product.original_price else None,
+                "stock_quantity": product.stock_quantity,
+                "category_id": product.category_id,
+                "created_at": product.created_at.isoformat() if product.created_at else None,
+                "images": images
+            }
+        }
+        result.append(cart_item)
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
-    await set_cache(cache_key, str(result), 300)
+    try:
+        # Sử dụng json.dumps thay vì str để serialize dữ liệu
+        await set_cache(cache_key, json.dumps(result), 300)
+    except Exception as e:
+        logger.error(f"Error caching cart data: {str(e)}")
     
     return result
 
 @router.post("/cart", response_model=dict)
 async def add_to_cart(
-    item: CartItem,
+    item: CartItemCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -232,7 +275,7 @@ async def add_to_cart(
     if not product or item.quantity <= 0 or item.quantity > product.stock_quantity:
         raise HTTPException(status_code=400, detail="Invalid quantity or product")
     
-    # Tạo cart_item với chính xác số lượng tham số theo định nghĩa hàm
+    # Tạo cart_item với chính xác số lượng tham số theo định dạng hàm
     cart_item = create_cart_item(db, user_id=current_user.user_id, cart_item=item)
     
     # Xóa cache giỏ hàng khi thêm sản phẩm mới

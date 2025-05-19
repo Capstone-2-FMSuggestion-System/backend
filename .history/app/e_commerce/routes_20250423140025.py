@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Body
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
 from .models import Product, Category, Orders, OrderItems, Reviews, ProductImages
@@ -327,10 +327,10 @@ async def create_product_review(
 
 @router.get("/orders", response_model=List[OrderResponse])
 async def get_user_orders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    orders = db.query(Orders).options(joinedload(Orders.items).joinedload(OrderItems.product)).filter(Orders.user_id == current_user.user_id).all()
+    orders = db.query(Orders).filter(Orders.user_id == current_user.user_id).all()
     return [OrderResponse.from_orm(order) for order in orders]
 
-@router.get("/orders/{order_id}", response_model=OrderResponse)
+@router.get("/orders/{order_id}", response_model=dict)
 async def get_order_details(
     order_id: int,
     current_user: User = Depends(get_current_user),
@@ -343,7 +343,27 @@ async def get_order_details(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    return OrderResponse.from_orm(order)
+    order_items = db.query(OrderItems).filter(OrderItems.order_id == order_id).all()
+    items = []
+    for item in order_items:
+        product = db.query(Product).filter(Product.product_id == item.product_id).first()
+        items.append({
+            "product_id": item.product_id,
+            "product_name": product.name if product else "Unknown",
+            "quantity": item.quantity,
+            "price": float(item.price),
+            "total": float(item.price * item.quantity)
+        })
+    
+    return {
+        "order_id": order.order_id,
+        "user_id": order.user_id,
+        "total_amount": float(order.total_amount),
+        "status": order.status,
+        "payment_method": order.payment_method,
+        "created_at": order.created_at,
+        "items": items
+    }
 
 @router.get("/products/featured", response_model=List[ProductResponse])
 async def get_featured_products(db: Session = Depends(get_db)):
@@ -804,45 +824,3 @@ async def get_related_products(
     print("======================================")
     
     return response_objects
-
-@router.put("/orders/{order_id}/cancel")
-async def cancel_order(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    order = db.query(Orders).filter(
-        Orders.order_id == order_id,
-        Orders.user_id == current_user.user_id
-    ).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    if order.status in ["cancelled", "delivered"]:
-        raise HTTPException(status_code=400, detail="Cannot cancel this order")
-    order.status = "cancelled"
-    db.commit()
-    db.refresh(order)
-    return {"message": "Order cancelled successfully", "order_id": order.order_id, "status": order.status}
-
-@router.put("/orders/{order_id}")
-async def update_order_status(
-    order_id: int,
-    data: dict = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    order = db.query(Orders).filter(
-        Orders.order_id == order_id,
-        Orders.user_id == current_user.user_id
-    ).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    if order.status != "shipped":
-        raise HTTPException(status_code=400, detail="Chỉ xác nhận đơn hàng khi trạng thái là 'shipped'")
-    new_status = data.get("status")
-    if new_status != "delivered":
-        raise HTTPException(status_code=400, detail="Chỉ cho phép chuyển sang trạng thái 'delivered'")
-    order.status = "delivered"
-    db.commit()
-    db.refresh(order)
-    return {"message": "Order status updated successfully", "order_id": order.order_id, "status": order.status}

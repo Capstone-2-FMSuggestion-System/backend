@@ -1,3 +1,6 @@
+# File này đã bị vô hiệu hóa, chỉ giữ lại PayOS
+raise NotImplementedError('ZaloPay integration is disabled. Use PayOS only.')
+
 import hmac
 import hashlib
 import time

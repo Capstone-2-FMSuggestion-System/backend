@@ -64,15 +64,6 @@ class Orders(Base):
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
 
-    recipient_name = Column(String(128))
-    recipient_phone = Column(String(32))
-    shipping_address = Column(String(256))
-    shipping_city = Column(String(64))
-    shipping_province = Column(String(64))
-    shipping_postal_code = Column(String(16))
-    items = relationship("OrderItems", back_populates="order")
-    payment = relationship("Payments", back_populates="order", uselist=False)
-
 class OrderItems(Base):
     __tablename__ = "order_items"
     order_item_id = Column(Integer, primary_key=True, index=True)
@@ -80,8 +71,6 @@ class OrderItems(Base):
     product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
     quantity = Column(Integer, nullable=False)
     price = Column(DECIMAL(10, 2), nullable=False)
-    order = relationship("Orders", back_populates="items")
-    product = relationship("Product")
 
 class Menus(Base):
     __tablename__ = "menus"
