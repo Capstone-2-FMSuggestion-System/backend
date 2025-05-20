@@ -1544,7 +1544,7 @@ async def create_admin_product(
         if files:
             try:
                 # Upload nhiều ảnh lên Cloudinary
-                results = await upload_multiple_images(files)
+                results = await upload_multiple_images(files, folder=None)
                 
                 # Thêm từng ảnh vào database
                 for i, result in enumerate(results):
@@ -1882,7 +1882,7 @@ async def upload_image_to_cloudinary(
             )
         
         # Upload lên Cloudinary
-        result = await upload_image(file, folder=folder if folder else None)
+        result = await upload_image(file, folder=None)
         
         return result
     except HTTPException as e:
@@ -2017,41 +2017,31 @@ async def delete_cloudinary_image_by_url(
 async def get_admin_orders(
     skip: int = Query(0, description="Số bản ghi bỏ qua"),
     limit: int = Query(10, description="Số bản ghi tối đa trả về"),
-    filter: Optional[str] = Query(None, description="Lọc theo trạng thái đơn hàng (pending, delivered, cancelled, etc.)"),
+    filter_status: Optional[str] = Query(None, alias="filter", description="Lọc theo trạng thái đơn hàng (pending, delivered, cancelled, etc.)"),
     sort: Optional[str] = Query("newest", description="Sắp xếp theo (newest, oldest, amount_high, amount_low)"),
     month: Optional[str] = Query(None, description="Lọc theo tháng (YYYY-MM)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    check_admin(current_user)
-    
     try:
-        # Bắt đầu truy vấn cơ bản
-        query = db.query(
-            Orders,
-            User.full_name.label("customer_name")
-        ).join(User, Orders.user_id == User.user_id)
+        check_admin(current_user)
         
-        # Áp dụng bộ lọc theo trạng thái
-        if filter:
-            query = query.filter(Orders.status == filter)
-            
-        # Áp dụng bộ lọc theo tháng
+        # Sử dụng LEFT JOIN để lấy thông tin người dùng liên quan
+        query = db.query(Orders, User).outerjoin(
+            User, Orders.user_id == User.user_id
+        )
+
+        if filter_status:
+            query = query.filter(Orders.status == filter_status)
+        
         if month:
             try:
-                year, month_num = month.split('-')
-                query = query.filter(
-                    extract('year', Orders.created_at) == int(year),
-                    extract('month', Orders.created_at) == int(month_num)
-                )
+                year, month_num = map(int, month.split('-'))
+                query = query.filter(extract('year', Orders.created_at) == year,
+                                     extract('month', Orders.created_at) == month_num)
             except ValueError:
-                # Bỏ qua nếu định dạng không đúng
-                pass
-        
-        # Đếm tổng số bản ghi (trước khi phân trang)
-        total_count = query.count()
-        
-        # Áp dụng sắp xếp
+                raise HTTPException(status_code=400, detail="Định dạng tháng không hợp lệ. Sử dụng YYYY-MM.")
+
         if sort == "newest":
             query = query.order_by(Orders.created_at.desc())
         elif sort == "oldest":
@@ -2060,43 +2050,52 @@ async def get_admin_orders(
             query = query.order_by(Orders.total_amount.desc())
         elif sort == "amount_low":
             query = query.order_by(Orders.total_amount.asc())
-        else:
-            # Mặc định sắp xếp theo thời gian tạo đơn giảm dần
-            query = query.order_by(Orders.created_at.desc())
-        
-        # Áp dụng phân trang
-        query = query.offset(skip).limit(limit)
-        
-        # Lấy kết quả
-        results = query.all()
-        
-        # Xử lý dữ liệu trả về
-        orders_list = []
-        for order, customer_name in results:
-            orders_list.append({
+
+        total_orders = query.count()
+        orders_data = query.offset(skip).limit(limit).all()
+
+        response_orders = []
+        for data in orders_data:
+            order = data[0]  # Orders object từ kết quả join
+            user = data[1]   # User object từ kết quả join (có thể None)
+            
+            # Lấy thông tin sản phẩm đầu tiên
+            first_order_item = db.query(OrderItems).filter(OrderItems.order_id == order.order_id).first()
+            first_product_name = None
+            if first_order_item:
+                product_info = db.query(Product.name).filter(Product.product_id == first_order_item.product_id).first()
+                if product_info:
+                    first_product_name = product_info[0]
+
+            # Gán shipping_method mặc định
+            shipping_method = "Nhanh" if order.order_id % 2 == 0 else "Tiêu chuẩn"
+
+            # Gán is_prepaid dựa vào payment_method
+            is_prepaid = True if order.payment_method == "payos" else False
+
+            response_orders.append({
                 "order_id": order.order_id,
                 "user_id": order.user_id,
+                "customer_name": user.full_name if user else order.recipient_name,
+                "phone_number": order.recipient_phone,
+                "email": user.email if user else None,
+                "address": order.shipping_address,
                 "total_amount": float(order.total_amount),
+                "shipping_method": shipping_method,
+                "is_prepaid": is_prepaid,
                 "status": order.status,
-                "payment_method": order.payment_method,
                 "created_at": order.created_at,
                 "updated_at": order.updated_at,
-                "recipient_name": order.recipient_name,
-                "recipient_phone": order.recipient_phone,
-                "shipping_address": order.shipping_address,
-                "shipping_city": order.shipping_city,
-                "shipping_province": order.shipping_province,
-                "shipping_postal": getattr(order, "shipping_postal", ""),
-                "customer_name": customer_name
+                "first_product_name": first_product_name
             })
-        
+
         return {
-            "orders": orders_list,
-            "total": total_count,
+            "orders": response_orders,
+            "total": total_orders,
             "skip": skip,
             "limit": limit
         }
-        
+    
     except Exception as e:
         logger.error(f"Error in get_admin_orders: {str(e)}")
         raise HTTPException(

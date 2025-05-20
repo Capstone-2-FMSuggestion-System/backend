@@ -12,14 +12,14 @@ class PaymentBase(BaseModel):
     amount: float
     method: str
     status: str = "pending"
-    zp_trans_id: Optional[str] = None
+    zp_trans_id: Optional[str] = None  # Giữ lại tên trường này để tương thích ngược mặc dù đã chuyển sang PayOS
 
 class PaymentCreate(PaymentBase):
     pass
 
 class PaymentUpdate(BaseModel):
     status: Optional[str] = None
-    zp_trans_id: Optional[str] = None
+    zp_trans_id: Optional[str] = None  # Giữ lại tên trường này để tương thích ngược mặc dù đã chuyển sang PayOS
 
 class PaymentResponse(PaymentBase):
     payment_id: int
@@ -30,43 +30,48 @@ class PaymentResponse(PaymentBase):
 
 class PaymentMethod(str, Enum):
     COD = "COD"
-    ZALOPAY_APP = "zalopayapp"
-    ATM = "ATM"
-    CREDIT_CARD = "CC"
-    QR_CODE = "QR"
+    PAYOS = "payos"
 
-class ZaloPayOrderBase(BaseModel):
-    app_id: Optional[int] = None
-    app_trans_id: Optional[str] = None
-    app_user: Optional[str] = None
-    app_time: Optional[int] = None
-    item: Optional[str] = None
-    embed_data: Optional[Dict[str, Any]] = None
-    amount: Optional[int] = None
-    description: Optional[str] = None
-    bank_code: Optional[str] = None
+class PayOSItemData(BaseModel):
+    name: str
+    price: float
+    quantity: int
 
-class ZaloPayOrderResponse(BaseModel):
-    return_code: int
-    return_message: str
-    sub_return_code: Optional[int] = None
-    sub_return_message: Optional[str] = None
-    order_url: Optional[str] = None
-    zp_trans_token: Optional[str] = None
-    order_token: Optional[str] = None
-    qr_code: Optional[str] = None
-
-class ZaloPayCallback(BaseModel):
-    app_id: int
-    app_trans_id: str
-    app_time: int
-    app_user: str
+class PayOSPaymentData(BaseModel):
+    order_code: str
     amount: int
-    embed_data: Dict[str, Any]
-    item: str
-    zp_trans_id: Optional[str] = None
-    server_time: Optional[int] = None
-    channel: Optional[int] = None
-    merchant_user_id: Optional[str] = None
-    user_fee_amount: Optional[int] = None
-    discount_amount: Optional[int] = None
+    description: str
+    items: List[PayOSItemData]
+    cancel_url: str
+    return_url: str
+
+class PayOSPaymentResponse(BaseModel):
+    status: int
+    orderCode: str
+    description: str
+    amount: int
+    checkoutUrl: str
+    qrCode: Optional[str] = None
+    deeplinkApp: Optional[str] = None
+    deeplinkMobile: Optional[str] = None
+    baseUrl: Optional[str] = None
+    expiredAt: Optional[datetime] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+
+class PayOSWebhookData(BaseModel):
+    orderCode: str
+    amount: int
+    description: str
+    accountNumber: Optional[str] = None
+    reference: Optional[str] = None
+    transactionDateTime: Optional[str] = None
+    paymentLinkId: Optional[str] = None
+    status: str  # Có thể là "PAID", "CANCELLED", "EXPIRED", "PROCESSING"
+
+class PayOSWebhook(BaseModel):
+    id: str
+    data: PayOSWebhookData
+    code: int
+    description: str
+    checksum: str

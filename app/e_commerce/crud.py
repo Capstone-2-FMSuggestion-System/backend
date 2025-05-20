@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from decimal import Decimal
-from datetime import datetime
-from .models import Product, Category, CartItems, Orders, OrderItems, FavoriteMenus, Menus
+from datetime import datetime, timedelta
+from .models import Product, Category, CartItems, Orders, OrderItems, FavoriteMenus, Menus, Promotions
 from .schemas import ProductCreate, ProductUpdate, CartItemCreate, OrderCreate
 import logging
 
@@ -55,6 +55,170 @@ def update_product(db: Session, product_id: int, product_data: dict) -> Optional
     db.commit()
     db.refresh(db_product)
     return db_product
+
+# Promotion CRUD operations
+def get_promotion_by_code(db: Session, code: str) -> Optional[Promotions]:
+    """
+    Lấy thông tin khuyến mãi theo mã code (name field trong bảng Promotions)
+    Kiểm tra xem coupon có trong thời hạn sử dụng không
+    """
+    current_time = datetime.now()
+    return db.query(Promotions).filter(
+        Promotions.name == code,
+        Promotions.start_date <= current_time,
+        Promotions.end_date >= current_time
+    ).first()
+
+def get_promotion_by_id(db: Session, promotion_id: int) -> Optional[Promotions]:
+    """
+    Lấy thông tin khuyến mãi theo ID
+    """
+    return db.query(Promotions).filter(Promotions.promotion_id == promotion_id).first()
+
+def get_all_active_promotions(db: Session) -> List[Promotions]:
+    """
+    Lấy danh sách tất cả khuyến mãi đang có hiệu lực
+    """
+    current_time = datetime.now()
+    return db.query(Promotions).filter(
+        Promotions.start_date <= current_time,
+        Promotions.end_date >= current_time
+    ).all()
+
+def create_promotion(db: Session, name: str, discount: float, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None, days_valid: int = 30) -> Promotions:
+    """
+    Tạo mã giảm giá mới
+    
+    Args:
+        db (Session): Phiên làm việc với database
+        name (str): Tên mã giảm giá (coupon code)
+        discount (float): Phần trăm giảm giá (ví dụ: 10 cho 10%)
+        start_date (datetime, optional): Ngày bắt đầu có hiệu lực. Mặc định là ngày hiện tại.
+        end_date (datetime, optional): Ngày kết thúc hiệu lực. 
+        days_valid (int, optional): Số ngày có hiệu lực nếu không cung cấp end_date. Mặc định là 30.
+    
+    Returns:
+        Promotions: Đối tượng khuyến mãi đã được tạo
+    """
+    # Kiểm tra xem mã đã tồn tại chưa
+    existing_promotion = get_promotion_by_code(db, name)
+    if existing_promotion:
+        raise ValueError(f"Mã giảm giá '{name}' đã tồn tại")
+    
+    # Nếu không có start_date, sử dụng thời gian hiện tại
+    if not start_date:
+        start_date = datetime.now()
+    
+    # Nếu không có end_date, tính dựa trên days_valid
+    if not end_date:
+        end_date = start_date + timedelta(days=days_valid)
+    
+    # Tạo promotion mới
+    new_promotion = Promotions(
+        name=name,
+        discount=discount,
+        start_date=start_date,
+        end_date=end_date
+    )
+    
+    db.add(new_promotion)
+    db.commit()
+    db.refresh(new_promotion)
+    
+    return new_promotion
+
+def update_promotion(db: Session, promotion_id: int, name: Optional[str] = None, discount: Optional[float] = None, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Optional[Promotions]:
+    """
+    Cập nhật thông tin khuyến mãi
+    
+    Args:
+        db (Session): Phiên làm việc với database
+        promotion_id (int): ID của khuyến mãi cần cập nhật
+        name (str, optional): Tên mã giảm giá mới
+        discount (float, optional): Phần trăm giảm giá mới
+        start_date (datetime, optional): Ngày bắt đầu mới
+        end_date (datetime, optional): Ngày kết thúc mới
+    
+    Returns:
+        Promotions: Đối tượng khuyến mãi đã được cập nhật hoặc None nếu không tìm thấy
+    """
+    promotion = get_promotion_by_id(db, promotion_id)
+    if not promotion:
+        return None
+    
+    if name:
+        promotion.name = name
+    if discount is not None:
+        promotion.discount = discount
+    if start_date:
+        promotion.start_date = start_date
+    if end_date:
+        promotion.end_date = end_date
+    
+    db.commit()
+    db.refresh(promotion)
+    
+    return promotion
+
+def delete_promotion(db: Session, promotion_id: int) -> bool:
+    """
+    Xóa mã giảm giá
+    
+    Args:
+        db (Session): Phiên làm việc với database
+        promotion_id (int): ID của khuyến mãi cần xóa
+    
+    Returns:
+        bool: True nếu xóa thành công, False nếu không tìm thấy khuyến mãi
+    """
+    promotion = get_promotion_by_id(db, promotion_id)
+    if not promotion:
+        return False
+    
+    db.delete(promotion)
+    db.commit()
+    
+    return True
+
+def apply_coupon_to_order(db: Session, order_id: int, coupon_code: str) -> Optional[dict]:
+    """
+    Áp dụng mã giảm giá vào đơn hàng
+    
+    Args:
+        db (Session): Phiên làm việc với cơ sở dữ liệu
+        order_id (int): ID của đơn hàng cần áp dụng mã giảm giá
+        coupon_code (str): Mã giảm giá
+        
+    Returns:
+        dict: Thông tin về tổng tiền đơn hàng sau khi áp dụng mã giảm giá hoặc None nếu không thành công
+    """
+    # Kiểm tra đơn hàng có tồn tại không
+    order = db.query(Orders).filter(Orders.order_id == order_id).first()
+    if not order:
+        return None
+        
+    # Kiểm tra mã giảm giá có hợp lệ không
+    promotion = get_promotion_by_code(db, coupon_code)
+    if not promotion:
+        return None
+    
+    # Tính toán số tiền giảm giá
+    original_total = order.total_amount
+    discount_amount = original_total * (Decimal(promotion.discount) / 100)
+    new_total = original_total - discount_amount
+    
+    # Cập nhật tổng tiền của đơn hàng
+    order.total_amount = new_total
+    db.commit()
+    db.refresh(order)
+    
+    return {
+        "order_id": order.order_id,
+        "original_total": float(original_total),
+        "discount_percent": float(promotion.discount),
+        "discount_amount": float(discount_amount),
+        "new_total": float(new_total)
+    }
 
 # Order CRUD operations
 def create_order(db: Session, order: OrderCreate) -> Orders:

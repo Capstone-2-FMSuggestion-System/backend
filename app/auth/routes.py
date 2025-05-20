@@ -9,6 +9,7 @@ from ..core.security import verify_password, get_password_hash
 from datetime import timedelta
 from ..core.cache import get_cache, set_cache, redis_client
 from ..user.schemas import UserUpdate
+from ..user.schemas import User as UserSchema
 import json
 import secrets
 from datetime import datetime, timedelta
@@ -228,4 +229,12 @@ async def reset_password(request: ResetPassword, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error resetting password: {str(e)}"
         )
+
+@router.get("/verify-token", response_model=UserSchema)
+async def verify_token_endpoint(current_user: User = Depends(get_current_user)):
+    """
+    Xác minh JWT token và trả về thông tin người dùng nếu hợp lệ.
+    Được sử dụng bởi các dịch vụ khác (ví dụ: base_chat) để xác thực token.
+    """
+    return current_user
 

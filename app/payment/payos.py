@@ -1,15 +1,12 @@
-import hmac
-import hashlib
-import time
-import urllib.request
-import urllib.parse
-import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
-import requests
+import json
+import time
+import inspect
+from payos import PayOS, ItemData, PaymentData
 
 # Set up logging
 logging.basicConfig(
@@ -24,7 +21,14 @@ load_dotenv()
 PAYOS_CLIENT_ID = os.getenv("PAYOS_CLIENT_ID")
 PAYOS_API_KEY = os.getenv("PAYOS_API_KEY")
 PAYOS_CHECKSUM_KEY = os.getenv("PAYOS_CHECKSUM_KEY")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# Khởi tạo PayOS client
+payos_client = PayOS(
+    client_id=PAYOS_CLIENT_ID,
+    api_key=PAYOS_API_KEY,
+    checksum_key=PAYOS_CHECKSUM_KEY
+)
 
 class PayOSError(Exception):
     """Custom exception for PayOS related errors"""
@@ -37,7 +41,8 @@ def verify_env() -> bool:
     required_vars = [
         'PAYOS_CLIENT_ID',
         'PAYOS_API_KEY',
-        'PAYOS_CHECKSUM_KEY'
+        'PAYOS_CHECKSUM_KEY',
+        'FRONTEND_URL'
     ]
     
     missing_vars = []
@@ -78,107 +83,117 @@ def create_payos_order(order_id: int, user_id: int, amount: float, items: list) 
     if not items:
         raise PayOSError("Items list cannot be empty")
     
-    # Prepare order data
-    order = {
-        "client_id": PAYOS_CLIENT_ID,
-        "order_code": f"ORDER_{order_id}_{int(time.time())}",
-        "amount": int(amount * 100),  # Convert to smallest currency unit
-        "description": f"Payment for order #{order_id}",
-        "cancel_url": f"{os.getenv('FRONTEND_URL')}/payment/cancel",
-        "return_url": f"{os.getenv('FRONTEND_URL')}/payment/success",
-        "items": items,
-        "customer": {
-            "user_id": str(user_id)
-        }
-    }
-
-    # Create checksum
-    data_str = json.dumps(order, sort_keys=True)
-    checksum = hmac.new(
-        PAYOS_CHECKSUM_KEY.encode('utf-8'),
-        data_str.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-
-    # Add checksum to headers
-    headers = {
-        'Content-Type': 'application/json',
-        'x-api-key': PAYOS_API_KEY,
-        'x-checksum': checksum
-    }
-
-    # Send request to PayOS
     try:
-        logger.info(f"Sending request to PayOS with data: {json.dumps(order, indent=2)}")
-        logger.info(f"Request headers: {json.dumps(headers, indent=2)}")
+        # Chuyển định dạng items từ input thành ItemData của PayOS
+        payos_items = []
+        for item in items:
+            payos_items.append(
+                ItemData(
+                    name=item["name"],
+                    price=int(item["price"]), # Ensure price is integer for PayOS
+                    quantity=item["quantity"]
+                )
+            )
         
-        response = requests.post(
-            "https://api-sandbox.payos.vn/v2/payment-requests",
-            json=order,
-            headers=headers,
-            timeout=10
+        # Tạo mã đơn hàng duy nhất - sử dụng số nguyên thay vì chuỗi
+        # Kết hợp order_id và timestamp để tạo số nguyên duy nhất
+        # Ví dụ: nếu order_id = 123 và timestamp = 1690000000, 
+        # orderCode = 1231690000000
+        current_timestamp = int(time.time())
+        # Tạo orderCode dưới dạng số nguyên bằng cách nối order_id và timestamp
+        order_code = int(f"{order_id}{current_timestamp}")
+        
+        # Tạo PaymentData - Lưu ý: orderCode phải là số nguyên
+        payment_data = PaymentData(
+            orderCode=order_code,
+            amount=int(amount),
+            description=f"Payment for order #{order_id}",
+            items=payos_items,
+            cancelUrl=f"{FRONTEND_URL}/payment/cancel",
+            returnUrl=f"{FRONTEND_URL}/payment/success",
+            # Thêm thông tin khách hàng
+            buyerName=f"Customer {user_id}",
+            buyerEmail=f"customer{user_id}@example.com",
+            buyerPhone="0123456789"
         )
         
-        logger.info(f"PayOS response status: {response.status_code}")
-        logger.info(f"PayOS response headers: {dict(response.headers)}")
+        # Gọi API tạo payment link
+        logger.info(f"Sending request to PayOS with data: {payment_data.to_json()}")
+        # Lấy kết quả từ PayOS API - đây là một đối tượng CreatePaymentResult, không phải dict
+        payment_result = payos_client.createPaymentLink(payment_data)
         
-        try:
-            result = response.json()
-            logger.info(f"PayOS response body: {json.dumps(result, indent=2)}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse PayOS response: {response.text}")
-            raise PayOSError(f"Invalid JSON response from PayOS: {str(e)}")
+        # In ra log chi tiết về đối tượng payment_result
+        logger.info(f"Payment result type: {type(payment_result)}")
+        logger.info(f"Payment result dir: {dir(payment_result)}")
+        
+        # Thử chuyển đổi đối tượng thành dict bằng __dict__ nếu có
+        if hasattr(payment_result, '__dict__'):
+            logger.info(f"Payment result __dict__: {payment_result.__dict__}")
+        
+        # Chuyển đổi CreatePaymentResult thành dict để có thể JSON serialize
+        response_data = {}
+        
+        # Kiểm tra từng thuộc tính dự kiến
+        if hasattr(payment_result, 'checkoutUrl'):
+            response_data["checkoutUrl"] = payment_result.checkoutUrl
+        
+        if hasattr(payment_result, 'orderCode'):
+            response_data["orderCode"] = payment_result.orderCode
+        
+        if hasattr(payment_result, 'description'):
+            response_data["description"] = payment_result.description
+        else:
+            response_data["description"] = "Success"
+        
+        # Ghi log đầy đủ kết quả tìm được
+        logger.info(f"Extracted response data: {response_data}")
+        
+        logger.info(f"PayOS response: {json.dumps(response_data, indent=2)}")
         
         # Log response time
         response_time = time.time() - start_time
         logger.info(f"PayOS order created successfully. Response time: {response_time:.2f}s")
         
-        if result.get("status") != "success":
-            error_msg = result.get("message", "Unknown error")
-            logger.error(f"PayOS order creation failed: {error_msg}")
-            raise PayOSError(error_msg)
-            
+        # Chuyển đổi kết quả để tương thích với định dạng cũ
+        result = {
+            "payment_url": response_data.get("checkoutUrl"),
+            "order_code": response_data.get("orderCode"),
+            # Assuming success if no error, actual status might be in response_data.get("status") if API provides it
+            "status": "success", 
+            "message": response_data.get("description", "Success") 
+        }
+        
         return result
         
-    except requests.exceptions.Timeout:
-        logger.error("Request to PayOS timed out")
-        raise PayOSError("Request to PayOS timed out")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error while creating PayOS order: {str(e)}")
-        raise PayOSError(f"Network error: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error while creating PayOS order: {str(e)}")
-        raise PayOSError(str(e))
+        logger.error(f"Error creating PayOS order: {str(e)}")
+        logger.error(f"Error details: {e}", exc_info=True)
+        # Trả về lỗi theo định dạng cũ
+        return {
+            "payment_url": None,
+            "order_code": None,
+            "status": "error",
+            "message": str(e)
+        }
 
-def verify_callback(data: Dict[str, Any]) -> bool:
+def verify_callback(webhook_body: Dict[str, Any]) -> bool:
     """
     Verify the validity of callback data from PayOS.
     
     Args:
-        data (Dict[str, Any]): Dictionary containing callback data from PayOS
+        webhook_body (Dict[str, Any]): Dictionary containing callback data from PayOS
         
     Returns:
         bool: True if data is valid and unchanged, False if invalid
     """
     logger.info("Verifying PayOS callback data")
     try:
-        received_checksum = data.get("checksum")
-        data_str = json.dumps(data.get("data", {}), sort_keys=True)
+        # Sử dụng phương thức của PayOS library để xác thực webhook
+        # The confirmWebhook method expects the webhook body as a dictionary
+        is_valid = payos_client.verifyPaymentWebhookData(webhook_body)
         
-        if not received_checksum or not data_str:
-            logger.error("Missing checksum or data in callback")
-            return False
-        
-        # Compute checksum for verification
-        computed_checksum = hmac.new(
-            PAYOS_CHECKSUM_KEY.encode('utf-8'),
-            data_str.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        
-        is_valid = received_checksum == computed_checksum
         if not is_valid:
-            logger.warning("Invalid checksum in callback")
+            logger.warning("Invalid checksum in callback or invalid webhook data structure")
         else:
             logger.info("Callback verification successful")
             
@@ -202,56 +217,76 @@ def query_order_status(order_code: str) -> Dict[str, Any]:
     start_time = time.time()
     
     try:
-        # Prepare request data
-        data = {
-            "client_id": PAYOS_CLIENT_ID,
-            "order_code": order_code
-        }
+        # Sử dụng phương thức của PayOS library để kiểm tra trạng thái
+        # Cũng cần chuyển đổi kết quả thành dict tương tự như với createPaymentLink
+        payment_info = payos_client.getPaymentLinkInformation(order_code)
         
-        data_str = json.dumps(data, sort_keys=True)
-        checksum = hmac.new(
-            PAYOS_CHECKSUM_KEY.encode('utf-8'),
-            data_str.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-
-        # Add checksum to headers
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': PAYOS_API_KEY,
-            'x-checksum': checksum
-        }
-
-        # Send request to PayOS
-        req = urllib.request.Request(
-            url="https://api-sandbox.payos.vn/v2/payment-requests/status",
-            data=data_str.encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
+        # In ra thông tin về đối tượng payment_info
+        logger.info(f"Payment info type: {type(payment_info)}")
+        logger.info(f"Payment info dir: {dir(payment_info)}")
         
-        response = urllib.request.urlopen(req)
-        result = json.loads(response.read())
+        # Chuyển đổi kết quả thành dict
+        response_data = {}
+        
+        # Kiểm tra từng thuộc tính dự kiến
+        if hasattr(payment_info, 'status'):
+            response_data["status"] = payment_info.status
+        else:
+            response_data["status"] = ""
+            
+        if hasattr(payment_info, 'description'):
+            response_data["description"] = payment_info.description
+        else:
+            response_data["description"] = ""
+            
+        if hasattr(payment_info, 'amount'):
+            response_data["amount"] = payment_info.amount
+        else:
+            response_data["amount"] = 0
+            
+        if hasattr(payment_info, 'checkoutUrl'):
+            response_data["checkoutUrl"] = payment_info.checkoutUrl
+        else:
+            response_data["checkoutUrl"] = ""
+            
+        if hasattr(payment_info, 'createdAt'):
+            response_data["createdAt"] = payment_info.createdAt
+        else:
+            response_data["createdAt"] = ""
+            
+        if hasattr(payment_info, 'updatedAt'):
+            response_data["updatedAt"] = payment_info.updatedAt
+        else:
+            response_data["updatedAt"] = ""
         
         # Log response time
         response_time = time.time() - start_time
         logger.info(f"Order status query completed. Response time: {response_time:.2f}s")
         
-        if result.get("status") != "success":
-            logger.error(f"Order status query failed: {result.get('message')}")
-            raise PayOSError(result.get("message"))
-            
+        # Lấy trạng thái trực tiếp từ phản hồi API
+        api_status = response_data.get("status", "").upper() # Ensure uppercase for consistency
+        
+        result = {
+            "status": "success", # Indicates the API call was successful
+            "data": {
+                "order_code": order_code,
+                "status": api_status, # Use the direct status from PayOS API
+                "description": response_data.get("description", ""),
+                "amount": response_data.get("amount", 0),
+                "payment_url": response_data.get("checkoutUrl", ""),
+                "created_at": response_data.get("createdAt", ""), # Assuming these fields exist
+                "updated_at": response_data.get("updatedAt", "")  # Assuming these fields exist
+            }
+        }
+        
         return result
         
-    except urllib.error.URLError as e:
-        logger.error(f"Network error while querying order status: {str(e)}")
-        raise PayOSError(f"Network error: {str(e)}")
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON response from PayOS: {str(e)}")
-        raise PayOSError(f"Invalid response format: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error while querying order status: {str(e)}")
-        raise PayOSError(str(e))
+        logger.error(f"Error querying order status: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 # Verify environment variables on module load
 if not verify_env():

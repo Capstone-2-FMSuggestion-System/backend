@@ -1,10 +1,19 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import logging
+
+# Cấu hình logging sớm để thấy được output
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Tìm file .env
 env_path = Path(__file__).parent.parent.parent / '.env'
-load_dotenv(dotenv_path=env_path)
+if env_path.exists():
+    logger.info(f"Đang tải biến môi trường từ: {env_path}")
+    load_dotenv(dotenv_path=env_path, override=True) # override=True để đảm bảo .env ghi đè biến hệ thống
+else:
+    logger.warning(f"Không tìm thấy file .env tại: {env_path}")
 
 # Cấu hình cơ bản
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -32,9 +41,18 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
 # Cấu hình Cloudinary
-CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "dgmdtzsya")
-CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "396451297575275")
-CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "ldDZdyY8Zo-xyWr9RuJ97OCqUl4")
-# Không sử dụng upload_preset để tránh lỗi "Upload preset not found"
-CLOUDINARY_UPLOAD_PRESET = None  # Không dùng upload_preset
-CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "fm_products") 
+CLOUDINARY_CLOUD_NAME_FROM_ENV = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY_FROM_ENV = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET_FROM_ENV = os.getenv("CLOUDINARY_API_SECRET")
+
+logger.info(f"CLOUDINARY_CLOUD_NAME đọc từ env: {CLOUDINARY_CLOUD_NAME_FROM_ENV}")
+
+CLOUDINARY_CLOUD_NAME = CLOUDINARY_CLOUD_NAME_FROM_ENV or "dr1icb3pe" # Fallback nếu env không có
+CLOUDINARY_API_KEY = CLOUDINARY_API_KEY_FROM_ENV or "767919882347391"
+CLOUDINARY_API_SECRET = CLOUDINARY_API_SECRET_FROM_ENV or "Kcyqq0mrG8mMoRgLp-3XFZubv7E"
+
+logger.info(f"CLOUDINARY_CLOUD_NAME sẽ sử dụng: {CLOUDINARY_CLOUD_NAME}")
+
+# Không còn sử dụng upload_preset và folder
+CLOUDINARY_UPLOAD_PRESET = None
+CLOUDINARY_FOLDER = None 

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session, joinedload
 from ..core.database import get_db
 from ..core.auth import get_current_user
-from .models import Product, Category, Orders, OrderItems, Reviews, ProductImages
+from .models import Product, Category, Orders, OrderItems, Reviews, ProductImages, Promotions
 from ..user.models import User
 from .schemas import (
     ProductBase, ProductCreate, ProductUpdate, ProductResponse, ProductImageCreate, 
@@ -10,7 +10,8 @@ from .schemas import (
     OrderCreate, OrderResponse, ReviewCreate, ReviewResponse, 
     CategoryResponse, CategoryWithSubcategories, ProductDiscountResponse, 
     MainCategoryResponse, ProductImageResponse, ProductDetailResponse, ProductSimpleResponse,
-    RelatedProductResponse
+    RelatedProductResponse, ApplyCouponRequest, CouponApplicationResponse, OrderSummaryResponse,
+    PromotionCreate, PromotionResponse, PromotionUpdate
 )
 from ..core.cache import get_cache, set_cache
 from typing import List, Optional
@@ -20,6 +21,7 @@ import datetime
 from pydantic import BaseModel
 import logging
 from sqlalchemy.sql import func
+from . import crud
 
 # Tạo logger
 logger = logging.getLogger(__name__)
@@ -846,3 +848,213 @@ async def update_order_status(
     db.commit()
     db.refresh(order)
     return {"message": "Order status updated successfully", "order_id": order.order_id, "status": order.status}
+
+# Endpoint mới cho việc áp dụng mã giảm giá
+@router.post("/orders/{order_id}/apply-coupon", response_model=CouponApplicationResponse)
+async def apply_coupon_to_order(
+    order_id: int,
+    coupon_request: ApplyCouponRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Áp dụng mã giảm giá cho đơn hàng
+    """
+    # Kiểm tra đơn hàng thuộc về người dùng hiện tại
+    order = db.query(Orders).filter(Orders.order_id == order_id, Orders.user_id == current_user.user_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Đơn hàng không tồn tại hoặc không thuộc về bạn")
+    
+    # Kiểm tra trạng thái đơn hàng
+    if order.status != "pending":
+        raise HTTPException(status_code=400, detail="Chỉ có thể áp dụng mã giảm giá cho đơn hàng đang chờ xử lý")
+    
+    # Áp dụng mã giảm giá
+    result = crud.apply_coupon_to_order(db, order_id, coupon_request.coupon_code)
+    if not result:
+        raise HTTPException(status_code=400, detail="Mã giảm giá không hợp lệ hoặc đã hết hạn")
+    
+    return result
+
+# Endpoint cho việc kiểm tra mã giảm giá hợp lệ
+@router.get("/coupons/{code}/validate")
+async def validate_coupon(
+    code: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Kiểm tra mã giảm giá có hợp lệ không
+    """
+    promotion = crud.get_promotion_by_code(db, code)
+    if not promotion:
+        return {"valid": False, "message": "Mã giảm giá không hợp lệ hoặc đã hết hạn"}
+    
+    return {
+        "valid": True,
+        "message": "Mã giảm giá hợp lệ",
+        "discount": float(promotion.discount),
+        "code": promotion.name,
+        "expires": promotion.end_date.isoformat()
+    }
+
+# Endpoint cho việc tính toán tổng kết hóa đơn (không có shipping)
+@router.get("/cart/summary", response_model=OrderSummaryResponse)
+async def get_cart_summary(
+    coupon_code: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Tính toán tổng kết hóa đơn dựa trên các sản phẩm trong giỏ hàng
+    """
+    # Lấy các sản phẩm trong giỏ hàng
+    cart_items = crud.get_cart_items_by_user(db, current_user.user_id)
+    
+    if not cart_items:
+        return OrderSummaryResponse(subtotal=0, discount=0, total=0)
+    
+    # Tính tổng tiền hàng
+    subtotal = 0
+    for cart_item in cart_items:
+        product = db.query(Product).filter(Product.product_id == cart_item.product_id).first()
+        if product:
+            subtotal += float(product.price) * cart_item.quantity
+    
+    # Mặc định không có giảm giá
+    discount = 0
+    coupon_applied = False
+    
+    # Nếu có mã giảm giá, kiểm tra và áp dụng
+    if coupon_code:
+        promotion = crud.get_promotion_by_code(db, coupon_code)
+        if promotion:
+            discount = subtotal * (float(promotion.discount) / 100)
+            coupon_applied = True
+    
+    # Tính tổng tiền sau giảm giá
+    total = subtotal - discount
+    
+    return OrderSummaryResponse(
+        subtotal=subtotal,
+        discount=discount,
+        total=total,
+        coupon_applied=coupon_applied,
+        coupon_code=coupon_code if coupon_applied else None
+    )
+
+# Endpoint để lấy tất cả mã giảm giá có hiệu lực
+@router.get("/promotions/active", response_model=List[PromotionResponse])
+async def get_active_promotions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lấy tất cả các mã giảm giá đang có hiệu lực
+    Chỉ admin mới có quyền truy cập endpoint này
+    """
+    # Kiểm tra quyền admin
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập"
+        )
+    
+    promotions = crud.get_all_active_promotions(db)
+    return promotions
+
+# Endpoint để tạo mã giảm giá mới
+@router.post("/promotions", response_model=PromotionResponse)
+async def create_promotion(
+    promotion: PromotionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Tạo mới mã giảm giá
+    Chỉ admin mới có quyền truy cập endpoint này
+    """
+    # Kiểm tra quyền admin
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập"
+        )
+    
+    try:
+        new_promotion = crud.create_promotion(
+            db=db,
+            name=promotion.name,
+            discount=promotion.discount,
+            start_date=promotion.start_date,
+            end_date=promotion.end_date,
+            days_valid=promotion.days_valid or 30
+        )
+        return new_promotion
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+# Endpoint để cập nhật mã giảm giá
+@router.put("/promotions/{promotion_id}", response_model=PromotionResponse)
+async def update_promotion(
+    promotion_id: int,
+    promotion: PromotionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Cập nhật thông tin mã giảm giá
+    Chỉ admin mới có quyền truy cập endpoint này
+    """
+    # Kiểm tra quyền admin
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập"
+        )
+    
+    updated_promotion = crud.update_promotion(
+        db=db,
+        promotion_id=promotion_id,
+        name=promotion.name,
+        discount=promotion.discount,
+        start_date=promotion.start_date,
+        end_date=promotion.end_date
+    )
+    
+    if not updated_promotion:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mã giảm giá không tồn tại"
+        )
+    
+    return updated_promotion
+
+# Endpoint để xóa mã giảm giá
+@router.delete("/promotions/{promotion_id}")
+async def delete_promotion(
+    promotion_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Xóa mã giảm giá
+    Chỉ admin mới có quyền truy cập endpoint này
+    """
+    # Kiểm tra quyền admin
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Không có quyền truy cập"
+        )
+    
+    success = crud.delete_promotion(db=db, promotion_id=promotion_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mã giảm giá không tồn tại"
+        )
+    
+    return {"detail": "Đã xóa mã giảm giá thành công"}

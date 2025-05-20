@@ -190,8 +190,12 @@ class PromotionBase(BaseModel):
     start_date: datetime
     end_date: datetime
 
-class PromotionCreate(PromotionBase):
-    pass
+class PromotionCreate(BaseModel):
+    name: str
+    discount: float
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    days_valid: Optional[int] = 30
 
 class PromotionResponse(PromotionBase):
     promotion_id: int
@@ -199,6 +203,30 @@ class PromotionResponse(PromotionBase):
     
     class Config:
         from_attributes = True
+
+class PromotionUpdate(BaseModel):
+    name: Optional[str] = None
+    discount: Optional[float] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+# Thêm schema mới cho việc áp dụng mã giảm giá
+class ApplyCouponRequest(BaseModel):
+    coupon_code: str
+
+class CouponApplicationResponse(BaseModel):
+    order_id: int
+    original_total: float
+    discount_percent: float
+    discount_amount: float
+    new_total: float
+
+class OrderSummaryResponse(BaseModel):
+    subtotal: float
+    discount: float
+    total: float
+    coupon_applied: bool = False
+    coupon_code: Optional[str] = None
 
 class ProductSimpleResponse(BaseModel):
     product_id: int

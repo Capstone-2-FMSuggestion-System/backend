@@ -160,8 +160,8 @@ async def update_user_avatar(
     # Tải lên avatar mới
     try:
         logger.info(f"Uploading new avatar: {file.filename} ({file_size} bytes)")
-        # Đảm bảo upload vào đúng folder data_fm trên Cloudinary
-        upload_result = await upload_image(file, folder="data_fm")
+        # Upload trực tiếp vào root của Cloudinary
+        upload_result = await upload_image(file, folder=None)
         
         # Log kết quả cho dễ debug
         logger.info(f"Avatar uploaded successfully: {upload_result.get('url')}")

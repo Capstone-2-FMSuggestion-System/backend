@@ -11,3 +11,8 @@ bcrypt==3.2.2
 numpy==1.24.3
 cloudinary==1.37.0
 python-multipart==0.0.7
+aiofiles
+pydantic[email]
+requests==2.31.0
+alembic
+payos==0.1.8

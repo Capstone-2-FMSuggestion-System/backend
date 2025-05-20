@@ -36,7 +36,7 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
     
     Args:
         file (UploadFile): File ảnh cần upload
-        folder (str, optional): Thư mục lưu trữ
+        folder (str, optional): Không còn được sử dụng, giữ lại để tương thích
         
     Returns:
         dict: Kết quả từ Cloudinary
@@ -68,22 +68,20 @@ async def upload_image(file: UploadFile, folder: Optional[str] = None) -> dict:
         
         # Upload lên Cloudinary
         try:
-            logger.info(f"Uploading image to Cloudinary: {safe_filename} to folder {folder}")
+            logger.info(f"Uploading image to Cloudinary: {safe_filename}")
             # Log cấu hình Cloudinary để debug
             logger.info(f"Cloudinary config: cloud_name={cloud_config.cloud_name}, api_key={cloud_config.api_key[:6]}...")
             
-            # Sử dụng folder trực tiếp, không cần upload_preset
-            folder_to_use = folder if folder else config.CLOUDINARY_FOLDER
-            logger.info(f"Using folder: {folder_to_use}")
-            
+            # Upload trực tiếp vào root (không dùng folder)
             upload_result = cloudinary.uploader.upload(
                 temp_file.name,
-                folder=folder_to_use,
                 public_id=os.path.splitext(safe_filename)[0],
                 overwrite=True,
                 resource_type="image",
                 unique_filename=True,
-                upload_preset=None  # Đặt rõ ràng upload_preset=None để vô hiệu hóa
+                # Không sử dụng folder và upload_preset
+                folder=None,
+                upload_preset=None
             )
             
             logger.info(f"Upload successful: {upload_result.get('public_id', 'unknown')}")
