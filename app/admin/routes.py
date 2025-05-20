@@ -118,6 +118,11 @@ async def create_product(
     await invalidate_dashboard_cache()
     logger.info(f"Dashboard cache invalidated after creating product {new_product.product_id}")
     
+    # Nếu sản phẩm được đánh dấu là nổi bật, xóa cache sản phẩm nổi bật
+    if new_product.is_featured:
+        await redis_client.delete("products:featured:limit6")
+        logger.info(f"Featured products cache invalidated after creating featured product {new_product.product_id}")
+    
     return {"message": "Product created successfully", "product_id": new_product.product_id}
 
 @router.get("/orders", response_model=List[dict])
@@ -1680,6 +1685,9 @@ async def update_admin_product(
         if not product:
             raise HTTPException(status_code=404, detail="Sản phẩm không tồn tại")
 
+        # Kiểm tra trạng thái is_featured trước khi cập nhật
+        previous_is_featured = product.is_featured
+
         # Cập nhật thông tin sản phẩm
         if name is not None:
             product.name = name
@@ -1744,6 +1752,11 @@ async def update_admin_product(
         db.commit()
         db.refresh(product)
 
+        # Kiểm tra nếu trạng thái is_featured thay đổi, xóa cache của sản phẩm nổi bật
+        if is_featured is not None and previous_is_featured != is_featured:
+            await redis_client.delete("products:featured:limit6")
+            logger.info(f"Featured products cache invalidated after updating product {product_id} featured status from {previous_is_featured} to {is_featured}")
+
         # Lấy lại thông tin sản phẩm đã cập nhật
         updated_product = db.query(Product).filter(Product.product_id == product_id).first()
         return updated_product
@@ -1766,6 +1779,9 @@ async def delete_admin_product(
         if not db_product:
             raise HTTPException(status_code=404, detail="Product not found")
         
+        # Lưu lại thông tin trước khi xóa
+        was_featured = db_product.is_featured
+        
         # Xóa ảnh sản phẩm trước
         db.query(ProductImages).filter(ProductImages.product_id == product_id).delete()
         
@@ -1776,6 +1792,11 @@ async def delete_admin_product(
         # Invalidate dashboard cache when a product is deleted
         await invalidate_dashboard_cache()
         logger.info(f"Dashboard cache invalidated after deleting product {product_id}")
+        
+        # Nếu sản phẩm đã xóa là sản phẩm nổi bật, xóa cache sản phẩm nổi bật
+        if was_featured:
+            await redis_client.delete("products:featured:limit6")
+            logger.info(f"Featured products cache invalidated after deleting featured product {product_id}")
         
         return None
     except SQLAlchemyError as e:

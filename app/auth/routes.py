@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import create_access_token, get_current_user
@@ -13,8 +13,58 @@ from ..user.schemas import User as UserSchema
 import json
 import secrets
 from datetime import datetime, timedelta
+import asyncio
+from typing import List, Dict, Any
+import importlib
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+# Hàm để thực hiện cache trước các dữ liệu cần thiết sau khi đăng nhập
+async def prefetch_user_data_after_login(user_id: int, db: Session, request: Request):
+    """
+    Hàm helper để cache trước các dữ liệu cần thiết sau khi người dùng đăng nhập
+    
+    Args:
+        user_id: ID của người dùng đã đăng nhập
+        db: Database session
+        request: HTTP request object
+    """
+    try:
+        # Truy xuất thông tin người dùng thật từ database để có đầy đủ các trường
+        real_user = db.query(User).filter(User.user_id == user_id).first()
+        if not real_user:
+            print(f"Error: User with ID {user_id} not found in database")
+            return
+        
+        # Import các route module để truy cập các handler function
+        from ..e_commerce.routes import get_featured_products, get_categories, get_categories_tree
+        from ..user.routes import get_cart_items
+        from ..e_commerce.routes import get_user_orders
+        from ..user.routes import get_current_user_info
+
+        print(f"Prefetching data for user_id: {user_id} after login")
+        
+        # Gọi các API handlers để cache dữ liệu
+        tasks = []
+        
+        # API không cần thông tin người dùng
+        tasks.append(get_featured_products(db=db))
+        tasks.append(get_categories(db=db))
+        tasks.append(get_categories_tree(force_refresh=True, db=db))
+        
+        # API cần thông tin người dùng
+        tasks.append(get_cart_items(current_user=real_user, db=db))
+        tasks.append(get_user_orders(current_user=real_user, db=db))
+        tasks.append(get_current_user_info(current_user=real_user))
+        
+        # Thực hiện tất cả các task song song
+        await asyncio.gather(*tasks)
+        print(f"Successfully prefetched data for user_id: {user_id}")
+        
+    except Exception as e:
+        print(f"Error prefetching data after login: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 @router.post("/register")
 async def register(user: UserCreate, db: Session = Depends(get_db)):
@@ -32,7 +82,12 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     return {"token": access_token, "user_id": new_user.user_id}
 
 @router.post("/login")
-async def login(login_data: Login, db: Session = Depends(get_db)):
+async def login(
+    login_data: Login, 
+    background_tasks: BackgroundTasks, 
+    request: Request,
+    db: Session = Depends(get_db)
+):
     # Kiểm tra xem đầu vào là email hay username
     if "@" in login_data.username_or_email:
         # Nếu là email
@@ -63,6 +118,10 @@ async def login(login_data: Login, db: Session = Depends(get_db)):
         {"user_id": user.user_id, "username": user.username, "role": user.role},
         timedelta(minutes=30)
     )
+    
+    # Thêm tác vụ prefetch dữ liệu sau khi đăng nhập vào background
+    background_tasks.add_task(prefetch_user_data_after_login, user.user_id, db, request)
+    
     return {
         "token": access_token,
         "token_type": "bearer",

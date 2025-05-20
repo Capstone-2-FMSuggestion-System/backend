@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
@@ -14,15 +14,22 @@ from ..e_commerce.crud import get_products, get_product, create_cart_item, get_c
 # Import các module khác cần thiết
 from ..core.cache import get_cache, set_cache, redis_client
 from ..core.cloudinary_utils import upload_image, delete_image
-from typing import List
+from typing import List, Optional, Dict, Any
 import os
 import re
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
+
+# Custom JSON encoder để xử lý datetime objects
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
@@ -34,7 +41,11 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     # Kiểm tra xem thông tin đã được cache chưa
     cached_data = await get_cache(cache_key)
     if cached_data:
-        return eval(cached_data)
+        try:
+            return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error parsing cached user info: {str(e)}")
+            # Nếu có lỗi khi parse cache, tiếp tục lấy dữ liệu mới
     
     # Nếu chưa có trong cache, lấy thông tin từ database
     user_data = {
@@ -54,7 +65,10 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     user_data = {k: v for k, v in user_data.items() if v is not None}
     
     # Lưu vào cache với thời gian hết hạn là 15 phút
-    await set_cache(cache_key, str(user_data), 900)
+    try:
+        await set_cache(cache_key, json.dumps(user_data, cls=DateTimeEncoder), 900)
+    except Exception as e:
+        logger.error(f"Error caching user info: {str(e)}")
     
     return user_data
 
@@ -204,8 +218,9 @@ async def get_cart_items(current_user: User = Depends(get_current_user), db: Ses
     cached_data = await get_cache(cache_key)
     if cached_data:
         try:
-            # Sử dụng json.loads thay vì eval để an toàn hơn
-            return json.loads(cached_data)
+            # Chuyển đổi dữ liệu JSON thành danh sách CartItem
+            cart_items_data = json.loads(cached_data)
+            return [CartItem.model_validate(item) for item in cart_items_data]
         except Exception as e:
             logger.error(f"Error parsing cached cart data: {str(e)}")
             # Nếu có lỗi khi parse cache, tiếp tục lấy dữ liệu mới
@@ -231,7 +246,8 @@ async def get_cart_items(current_user: User = Depends(get_current_user), db: Ses
                 "product_id": img.product_id,
                 "image_url": img.image_url,
                 "is_primary": img.is_primary,
-                "created_at": img.created_at.isoformat() if img.created_at else None
+                "display_order": img.display_order,
+                "created_at": img.created_at.isoformat() if img.created_at else datetime.now().isoformat()
             }
             images.append(image_data)
         
@@ -241,29 +257,32 @@ async def get_cart_items(current_user: User = Depends(get_current_user), db: Ses
             "product_id": item.product_id,
             "quantity": item.quantity,
             "user_id": item.user_id,
-            "added_at": item.added_at.isoformat() if item.added_at else None,
+            "added_at": item.added_at.isoformat() if item.added_at else datetime.now().isoformat(),
             "product": {
                 "product_id": product.product_id,
                 "name": product.name,
-                "description": product.description,
+                "description": product.description if product.description else "",
                 "price": float(product.price),
-                "original_price": float(product.original_price) if product.original_price else None,
+                "original_price": float(product.original_price) if product.original_price else float(product.price),
                 "stock_quantity": product.stock_quantity,
                 "category_id": product.category_id,
-                "created_at": product.created_at.isoformat() if product.created_at else None,
-                "images": images
+                "created_at": product.created_at.isoformat() if product.created_at else datetime.now().isoformat(),
+                "images": images,
+                "is_featured": product.is_featured if hasattr(product, 'is_featured') else False,
+                "unit": product.unit if product.unit else ""
             }
         }
         result.append(cart_item)
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
     try:
-        # Sử dụng json.dumps thay vì str để serialize dữ liệu
-        await set_cache(cache_key, json.dumps(result), 300)
+        # Sử dụng json.dumps với DateTimeEncoder để xử lý datetime
+        await set_cache(cache_key, json.dumps(result, cls=DateTimeEncoder), 300)
     except Exception as e:
         logger.error(f"Error caching cart data: {str(e)}")
     
-    return result
+    # Tạo đối tượng CartItem từ dữ liệu đã xử lý
+    return [CartItem.model_validate(item) for item in result]
 
 @router.post("/cart", response_model=dict)
 async def add_to_cart(
@@ -338,7 +357,11 @@ async def get_user_chat_history(
     # Kiểm tra xem lịch sử chat đã được cache chưa
     cached_data = await get_cache(cache_key)
     if cached_data:
-        return eval(cached_data)
+        try:
+            return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error parsing cached chat history: {str(e)}")
+            # Nếu có lỗi khi parse cache, tiếp tục lấy dữ liệu mới
     
     # Nếu chưa có trong cache, lấy thông tin từ database
     # Get all chat sessions for the user
@@ -358,14 +381,17 @@ async def get_user_chat_history(
     result = [
         {
             "session_id": session.session_id,
-            "created_at": session.created_at,
+            "created_at": session.created_at.isoformat() if isinstance(session.created_at, datetime) else session.created_at,
             "message_count": session.message_count
         }
         for session in chat_sessions
     ]
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
-    await set_cache(cache_key, str(result), 300)
+    try:
+        await set_cache(cache_key, json.dumps(result, cls=DateTimeEncoder), 300)
+    except Exception as e:
+        logger.error(f"Error caching chat history: {str(e)}")
     
     return result
 
@@ -381,7 +407,11 @@ async def get_chat_session_messages(
     # Kiểm tra xem tin nhắn chat đã được cache chưa
     cached_data = await get_cache(cache_key)
     if cached_data:
-        return eval(cached_data)
+        try:
+            return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error parsing cached chat messages: {str(e)}")
+            # Nếu có lỗi khi parse cache, tiếp tục lấy dữ liệu mới
     
     # Nếu chưa có trong cache, lấy thông tin từ database
     # Verify session belongs to user
@@ -411,12 +441,15 @@ async def get_chat_session_messages(
         {
             "question": msg.question,
             "answer": msg.answer,
-            "timestamp": msg.timestamp
+            "timestamp": msg.timestamp.isoformat() if isinstance(msg.timestamp, datetime) else msg.timestamp
         }
         for msg in messages
     ]
     
     # Lưu vào cache với thời gian hết hạn là 5 phút
-    await set_cache(cache_key, str(result), 300)
+    try:
+        await set_cache(cache_key, json.dumps(result, cls=DateTimeEncoder), 300)
+    except Exception as e:
+        logger.error(f"Error caching chat messages: {str(e)}")
     
     return result

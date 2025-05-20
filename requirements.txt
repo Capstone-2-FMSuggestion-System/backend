@@ -16,3 +16,4 @@ pydantic[email]
 requests==2.31.0
 alembic
 payos==0.1.8
+httpx==0.25.2

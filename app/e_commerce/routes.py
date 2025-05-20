@@ -190,7 +190,7 @@ async def get_categories_tree(force_refresh: bool = False, db: Session = Depends
         )
 
 @router.get("/products", response_model=List[ProductResponse])
-def get_products(
+async def get_products(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
@@ -198,6 +198,24 @@ def get_products(
     is_featured: Optional[bool] = None,
     search: Optional[str] = None
 ):
+    # Tạo cache key dành riêng cho trường hợp sản phẩm nổi bật với limit=6
+    # Chỉ lưu cache cho trường hợp cụ thể này theo yêu cầu
+    if is_featured == True and limit == 6 and skip == 0 and category_id is None and search is None:
+        cache_key = "products:featured:limit6"
+        
+        # Kiểm tra xem dữ liệu có trong cache không
+        cached_result = await get_cache(cache_key)
+        if cached_result:
+            try:
+                # Chuyển đổi từ JSON string sang danh sách ProductResponse
+                cached_data = json.loads(cached_result)
+                return [ProductResponse.model_validate(item) for item in cached_data]
+            except Exception as e:
+                print(f"Error parsing cached result: {str(e)}")
+                # Tiếp tục lấy từ database nếu parsing cache thất bại
+    
+    # Nếu không có trong cache hoặc không phải là trường hợp cần lưu cache,
+    # hoặc parsing thất bại, thực hiện truy vấn từ database
     query = db.query(Product)
     
     if category_id:
@@ -223,6 +241,44 @@ def get_products(
         
         # Load images
         product.images = db.query(ProductImages).filter(ProductImages.product_id == product.product_id).all()
+    
+    # Lưu kết quả vào cache nếu đây là trường hợp is_featured=true và limit=6
+    if is_featured == True and limit == 6 and skip == 0 and category_id is None and search is None:
+        try:
+            # Chuyển đổi danh sách sản phẩm thành dạng JSON để lưu vào cache
+            products_data = []
+            for product in products:
+                product_dict = {
+                    "product_id": product.product_id,
+                    "name": product.name,
+                    "category_id": product.category_id,
+                    "price": float(product.price),
+                    "original_price": float(product.original_price),
+                    "unit": product.unit,
+                    "description": product.description if product.description else "",
+                    "stock_quantity": int(product.stock_quantity),
+                    "is_featured": bool(product.is_featured),
+                    "created_at": product.created_at.isoformat() if product.created_at else datetime.now().isoformat(),
+                    "images": [
+                        {
+                            "image_id": img.image_id,
+                            "product_id": img.product_id,
+                            "image_url": img.image_url,
+                            "display_order": img.display_order,
+                            "is_primary": img.is_primary,
+                            "created_at": img.created_at.isoformat() if img.created_at else datetime.now().isoformat()
+                        } for img in product.images
+                    ] if product.images else []
+                }
+                products_data.append(product_dict)
+            
+            # Lưu vào cache với thời gian hết hạn là 15 phút
+            await set_cache(cache_key, json.dumps(products_data, cls=DateTimeEncoder), 900)
+            print(f"Cached {len(products)} featured products with limit=6")
+        except Exception as e:
+            print(f"Error caching products: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     return products
 
