@@ -29,6 +29,7 @@ ENV/
 .env
 .env.local
 .cursor/rules/
+myven/
 
 # IDE specific files
 .idea/
