@@ -322,7 +322,7 @@ async def create_product_review(
 
 @router.get("/orders", response_model=List[OrderResponse])
 async def get_user_orders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    orders = db.query(Orders).filter(Orders.user_id == current_user.user_id).all()
+    orders = db.query(Orders).options(joinedload(Orders.items).joinedload(OrderItems.product)).filter(Orders.user_id == current_user.user_id).order_by(Orders.created_at.desc()).all()
     return [OrderResponse.from_orm(order) for order in orders]
 
 @router.get("/orders/{order_id}", response_model=dict)
