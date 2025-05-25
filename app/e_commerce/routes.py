@@ -189,14 +189,25 @@ async def get_categories_tree(force_refresh: bool = False, db: Session = Depends
             detail=f"Internal server error: {str(e)}"
         )
 
-@router.get("/products", response_model=List[ProductResponse])
+class ProductsWithPaginationResponse(BaseModel):
+    products: List[ProductResponse]
+    pagination: dict
+    total_products: int
+    total_pages: int
+    current_page: int
+    has_next: bool
+    has_prev: bool
+
+@router.get("/products")
 async def get_products(
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    page: int = 1,
+    limit: int = 9,
+    skip: Optional[int] = None,  # Giữ lại để backward compatibility
     category_id: Optional[int] = None,
     is_featured: Optional[bool] = None,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    sort_by: Optional[str] = "created_at"
 ):
     # Tạo cache key dành riêng cho trường hợp sản phẩm nổi bật với limit=6
     # Chỉ lưu cache cho trường hợp cụ thể này theo yêu cầu
@@ -225,7 +236,36 @@ async def get_products(
     if search:
         query = query.filter(Product.name.ilike(f"%{search}%"))
     
-    products = query.offset(skip).limit(limit).all()
+    # Thêm sorting
+    if sort_by == "price_asc":
+        query = query.order_by(Product.price.asc())
+    elif sort_by == "price_desc":
+        query = query.order_by(Product.price.desc())
+    elif sort_by == "name_asc":
+        query = query.order_by(Product.name.asc())
+    elif sort_by == "name_desc":
+        query = query.order_by(Product.name.desc())
+    elif sort_by == "created_at":
+        query = query.order_by(Product.created_at.desc())
+    else:
+        query = query.order_by(Product.created_at.desc())
+    
+    # Tính toán pagination
+    if skip is not None:
+        # Backward compatibility với skip
+        calculated_skip = skip
+        calculated_page = (skip // limit) + 1
+    else:
+        # Sử dụng page parameter
+        calculated_page = max(1, page)
+        calculated_skip = (calculated_page - 1) * limit
+    
+    # Đếm tổng số sản phẩm
+    total_products = query.count()
+    total_pages = (total_products + limit - 1) // limit  # Ceiling division
+    
+    # Lấy sản phẩm cho trang hiện tại
+    products = query.offset(calculated_skip).limit(limit).all()
     
     # Eager load images for each product
     for product in products:
@@ -280,7 +320,248 @@ async def get_products(
             import traceback
             traceback.print_exc()
     
-    return products
+    # Tạo pagination info
+    pagination_info = {
+        "total_products": total_products,
+        "total_pages": total_pages,
+        "current_page": calculated_page,
+        "limit": limit,
+        "has_next": calculated_page < total_pages,
+        "has_prev": calculated_page > 1
+    }
+    
+    # Trả về cấu trúc có pagination hoặc chỉ products tùy vào request
+    # Nếu là request từ frontend mới (có page parameter), trả về với pagination
+    if skip is None and page is not None:
+        return {
+            "products": products,
+            "pagination": pagination_info,
+            "total_products": total_products,
+            "total_pages": total_pages,
+            "current_page": calculated_page,
+            "has_next": calculated_page < total_pages,
+            "has_prev": calculated_page > 1
+        }
+    else:
+        # Backward compatibility - trả về chỉ products
+        return products
+
+@router.get("/products/search")
+async def search_products(
+    query: str,
+    page: int = 1,
+    limit: int = 9,
+    sort_by: Optional[str] = "relevance",
+    db: Session = Depends(get_db)
+):
+    """
+    Tìm kiếm sản phẩm với fuzzy search (tìm kiếm gần đúng)
+    """
+    if not query or len(query.strip()) < 2:
+        return {
+            "products": [],
+            "total": 0,
+            "totalPages": 0,
+            "currentPage": page
+        }
+    
+    # Kiểm tra cache trước
+    cache_key = f"search:{query.strip().lower()}:page:{page}:limit:{limit}:sort:{sort_by}"
+    cached_result = await get_cache(cache_key)
+    if cached_result:
+        try:
+            return json.loads(cached_result)
+        except Exception as e:
+            print(f"Error parsing cached search result: {str(e)}")
+    
+    # Import fuzzy search helper
+    from .fuzzy_search import fuzzy_helper
+    
+    # Giới hạn limit
+    if limit > 20:
+        limit = 20
+    if page < 1:
+        page = 1
+    
+    # Tính offset
+    offset = (page - 1) * limit
+    
+    # Mở rộng từ khóa tìm kiếm với fuzzy search
+    expanded_terms = fuzzy_helper.expand_search_terms(query)
+    
+    print(f"🔍 Original query: {query}")
+    print(f"🔍 Expanded terms: {expanded_terms[:10]}")  # Chỉ in 10 từ đầu
+    
+    # Tạo điều kiện tìm kiếm với các từ khóa mở rộng
+    search_conditions = []
+    
+    # Tìm kiếm trong tên sản phẩm
+    for term in expanded_terms:
+        if len(term.strip()) >= 2:
+            search_conditions.append(Product.name.ilike(f"%{term}%"))
+    
+    # Tìm kiếm trong mô tả (chỉ với từ khóa gốc để tránh quá nhiều kết quả)
+    original_terms = query.strip().split()
+    for term in original_terms:
+        if len(term) >= 2:
+            search_conditions.append(Product.description.ilike(f"%{term}%"))
+    
+    # Kết hợp các điều kiện bằng OR
+    from sqlalchemy import or_
+    search_query = db.query(Product).filter(or_(*search_conditions))
+    
+    # Tối ưu hóa: Giới hạn số lượng sản phẩm để tính điểm liên quan
+    max_products_for_scoring = 200  # Giới hạn để tăng hiệu suất
+    
+    # Đếm tổng số kết quả
+    total_results = search_query.count()
+    total_pages = (total_results + limit - 1) // limit
+    
+    # Lấy một số lượng hợp lý sản phẩm để tính điểm
+    products_to_score = min(total_results, max_products_for_scoring)
+    all_products = search_query.limit(products_to_score).all()
+    
+    # Tính điểm liên quan cho từng sản phẩm
+    products_with_scores = []
+    for product in all_products:
+        score = fuzzy_helper.calculate_relevance_score(
+            product.name, 
+            product.description, 
+            query
+        )
+        products_with_scores.append((product, score))
+    
+    # Sắp xếp theo tiêu chí
+    if sort_by == "price_asc":
+        products_with_scores.sort(key=lambda x: x[0].price)
+    elif sort_by == "price_desc":
+        products_with_scores.sort(key=lambda x: x[0].price, reverse=True)
+    elif sort_by == "name_asc":
+        products_with_scores.sort(key=lambda x: x[0].name)
+    elif sort_by == "name_desc":
+        products_with_scores.sort(key=lambda x: x[0].name, reverse=True)
+    elif sort_by == "created_at":
+        products_with_scores.sort(key=lambda x: x[0].created_at, reverse=True)
+    else:  # sort_by == "relevance" hoặc default
+        products_with_scores.sort(key=lambda x: x[1], reverse=True)  # Sắp xếp theo điểm liên quan
+    
+    # Áp dụng phân trang
+    paginated_products = products_with_scores[offset:offset + limit]
+    products = [item[0] for item in paginated_products]
+    
+    # Format kết quả
+    formatted_products = []
+    for product in products:
+        # Load images
+        product.images = db.query(ProductImages).filter(ProductImages.product_id == product.product_id).all()
+        
+        # Format product data
+        product_data = {
+            "id": product.product_id,
+            "product_id": product.product_id,
+            "name": product.name,
+            "price": float(product.price),
+            "originalPrice": float(product.original_price),
+            "discountPrice": float(product.price) if float(product.price) < float(product.original_price) else None,
+            "hasDiscount": float(product.price) < float(product.original_price),
+            "unit": product.unit,
+            "description": product.description,
+            "stock_quantity": product.stock_quantity,
+            "image": product.images[0].image_url if product.images else None,
+            "images": [img.image_url for img in product.images] if product.images else [],
+            "category_id": product.category_id,
+            "is_featured": product.is_featured,
+            "created_at": product.created_at
+        }
+        formatted_products.append(product_data)
+    
+    result = {
+        "products": formatted_products,
+        "total": total_results,
+        "totalPages": total_pages,
+        "currentPage": page,
+        "hasNext": page < total_pages,
+        "hasPrev": page > 1
+    }
+    
+    # Lưu kết quả vào cache (5 phút)
+    try:
+        await set_cache(cache_key, json.dumps(result, cls=DateTimeEncoder), 300)
+    except Exception as e:
+        print(f"Error caching search result: {str(e)}")
+    
+    return result
+
+@router.get("/products/featured")
+async def get_featured_products(db: Session = Depends(get_db)):
+    """
+    Retrieve featured products - simplified version for debugging
+    """
+    try:
+        # Get featured products
+        featured_products = db.query(Product).filter(
+            Product.is_featured == True
+        ).limit(6).all()
+        
+        logger.info(f"Found {len(featured_products)} featured products")
+        
+        if not featured_products:
+            # If no featured products found, get some random products
+            featured_products = db.query(Product).order_by(
+                func.random()
+            ).limit(6).all()
+            logger.info("No featured products found, using random products instead")
+        
+        # Convert to simple dict format (same as /products endpoint)
+        result = []
+        for product in featured_products:
+            try:
+                # Get images
+                images = []
+                if product.images:
+                    sorted_images = sorted(product.images, key=lambda img: img.display_order)
+                    images = [img.image_url for img in sorted_images]
+                
+                # Get primary image
+                image_url = None
+                if product.images:
+                    primary_images = [img for img in product.images if img.is_primary]
+                    if primary_images:
+                        image_url = primary_images[0].image_url
+                    elif images:
+                        image_url = images[0]
+                
+                product_dict = {
+                    "product_id": product.product_id,
+                    "name": product.name,
+                    "description": product.description or "",
+                    "price": float(product.price) if product.price else 0.0,
+                    "original_price": float(product.original_price) if product.original_price else 0.0,
+                    "category_id": product.category_id,
+                    "unit": product.unit or "piece",
+                    "stock_quantity": product.stock_quantity or 0,
+                    "is_featured": bool(product.is_featured),
+                    "created_at": product.created_at.isoformat() if product.created_at else datetime.now().isoformat(),
+                    "image": image_url,
+                    "images": images
+                }
+                
+                result.append(product_dict)
+                logger.info(f"Added product {product.product_id} to featured list")
+                    
+            except Exception as e:
+                logger.error(f"Error processing product {product.product_id}: {str(e)}")
+                continue
+        
+        logger.info(f"Returning {len(result)} featured products")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in get_featured_products: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while fetching featured products"
+        )
 
 @router.get("/products/{product_id}", response_model=ProductDetailResponse)
 async def get_product(product_id: int, db: Session = Depends(get_db)):
@@ -403,97 +684,9 @@ async def get_order_details(
     
     return OrderResponse.from_orm(order)
 
-@router.get("/products/featured", response_model=List[ProductResponse])
-async def get_featured_products(db: Session = Depends(get_db)):
-    """
-    Retrieve featured products based on criteria like high ratings or manual selection
-    """
-    try:
-        # Try to get from cache first
-        cache_key = "products:featured"
-        cached_result = await get_cache(cache_key)
-        if cached_result:
-            try:
-                # Parse JSON instead of using eval
-                cached_data = json.loads(cached_result)
-                return [ProductResponse.model_validate(item) for item in cached_data]
-            except Exception as e:
-                logger.error(f"Error parsing cached result: {str(e)}")
-                # Continue to fetch from database if cache parsing fails
-        
-        # Get featured products with proper error handling
-        featured_products = db.query(Product).filter(
-            Product.is_featured == True
-        ).limit(10).all()
-        
-        logger.info(f"Found {len(featured_products)} featured products")
-        
-        if not featured_products:
-            # If no featured products found, get some random products
-            featured_products = db.query(Product).order_by(
-                func.random()
-            ).limit(10).all()
-            logger.info("No featured products found, using random products instead")
-        
-        # Convert to response model with proper error handling
-        result = []
-        for product in featured_products:
-            try:
-                # Ensure all required fields have valid values
-                if not product.name or product.price is None or product.original_price is None or product.category_id is None:
-                    logger.warning(f"Product {product.product_id} is missing required fields")
-                    continue
 
-                # Convert datetime to ISO format for JSON serialization
-                product_dict = {
-                    "product_id": product.product_id,
-                    "name": product.name,
-                    "description": product.description or "",
-                    "price": float(product.price),
-                    "original_price": float(product.original_price),
-                    "category_id": product.category_id,
-                    "unit": product.unit or "piece",
-                    "stock_quantity": product.stock_quantity or 0,
-                    "is_featured": product.is_featured or False,
-                    "created_at": product.created_at if product.created_at else datetime.now(),
-                    "images": [img.image_url for img in product.images] if product.images else []
-                }
-                
-                # Log the processed product data
-                logger.info(f"Processed product data: {json.dumps(product_dict, cls=DateTimeEncoder)}")
-                
-                # Validate the product data
-                try:
-                    product_response = ProductResponse.model_validate(product_dict)
-                    result.append(product_response)
-                except Exception as e:
-                    logger.error(f"Validation error for product {product.product_id}: {str(e)}")
-                    continue
-                    
-            except Exception as e:
-                logger.error(f"Error converting product {product.product_id} to response model: {str(e)}")
-                logger.error(f"Product data that caused error: {product.__dict__}")
-                continue
-        
-        if not result:
-            logger.warning("No valid products found after processing")
-            return []
-            
-        # Cache the result with proper JSON serialization
-        try:
-            serialized_result = json.dumps([item.model_dump() for item in result], cls=DateTimeEncoder)
-            await set_cache(cache_key, serialized_result, expire=300)
-        except Exception as e:
-            logger.error(f"Error caching featured products: {str(e)}")
-            
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error in get_featured_products: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="An error occurred while fetching featured products"
-        )
+
+
 
 @router.get("/categories/{category_id}/subcategories-tree", response_model=CategoryWithSubcategories)
 async def get_category_with_all_subcategories(category_id: int, db: Session = Depends(get_db)):
@@ -547,11 +740,11 @@ class ProductsByCategoryResponse(BaseModel):
 
 @router.get("/categories/{category_id}/products", response_model=ProductsByCategoryResponse)
 async def get_products_by_subcategory(
-    category_id: int,
+    category_id: str,  # Thay đổi từ int thành str để xử lý "all"
     include_subcategories: bool = True,
     page: int = 1,
-    limit: int = 9,
-    sort_by: Optional[str] = "name",  # name, price_asc, price_desc, newest
+    limit: int = 9,  # Trở lại 9 sản phẩm/trang
+    sort_by: Optional[str] = "created_at",  # Thay đổi default
     db: Session = Depends(get_db)
 ):
     """
@@ -562,7 +755,7 @@ async def get_products_by_subcategory(
     - limit: Số sản phẩm trên mỗi trang (tối đa 9)
     - sort_by: Tiêu chí sắp xếp (name, price_asc, price_desc, newest)
     """
-    # Giới hạn số lượng sản phẩm trên mỗi trang
+    # Giới hạn số lượng sản phẩm trên mỗi trang - 9 sản phẩm
     if limit > 9:
         limit = 9
     
@@ -572,58 +765,137 @@ async def get_products_by_subcategory(
     # Tính offset cho phân trang
     offset = (page - 1) * limit
     
-    # Kiểm tra xem dữ liệu có trong cache không
-    cache_key = f"subcategory:{category_id}:products_simple:{include_subcategories}:page:{page}:limit:{limit}:sort:{sort_by}"
-    cached_result = await get_cache(cache_key)
-    if cached_result:
+    # Xử lý trường hợp đặc biệt cho "all" - lấy tất cả sản phẩm
+    if category_id == "all":
+        # Kiểm tra cache cho trường hợp "all"
+        cache_key = f"all_products:page:{page}:limit:{limit}:sort:{sort_by}"
+        cached_result = await get_cache(cache_key)
+        if cached_result:
+            try:
+                return json.loads(cached_result)
+            except Exception as e:
+                print(f"Error deserializing cached all products: {str(e)}")
+        
+        # Tạo query cho tất cả sản phẩm
+        base_query = db.query(Product)
+        
+        # Đếm tổng số sản phẩm
+        total_products = base_query.count()
+        
+        # Tính tổng số trang
+        total_pages = (total_products + limit - 1) // limit
+        
+        # Áp dụng sắp xếp
+        if sort_by == "price_asc":
+            base_query = base_query.order_by(Product.price.asc())
+        elif sort_by == "price_desc":
+            base_query = base_query.order_by(Product.price.desc())
+        elif sort_by == "created_at":
+            base_query = base_query.order_by(Product.created_at.desc())
+        elif sort_by == "name_asc":
+            base_query = base_query.order_by(Product.name.asc())
+        elif sort_by == "name_desc":
+            base_query = base_query.order_by(Product.name.desc())
+        else:  # Mặc định sắp xếp theo created_at
+            base_query = base_query.order_by(Product.created_at.desc())
+        
+        # Áp dụng phân trang
+        products = base_query.offset(offset).limit(limit).all()
+        
+        # Tạo category response giả cho "all"
         try:
-            return json.loads(cached_result)
+            category_response = CategoryResponse(
+                category_id=0,  # Thay đổi từ "all" thành 0
+                name="Tất cả sản phẩm",
+                description="Hiển thị tất cả sản phẩm có sẵn",
+                level=0,
+                parent_id=None
+            )
         except Exception as e:
-            print(f"Error deserializing cached products: {str(e)}")
-            # Tiếp tục xử lý nếu có lỗi khi parse cache
-    
-    # Kiểm tra xem category có tồn tại không
-    category = db.query(Category).filter(Category.category_id == category_id).first()
-    if not category:
-        raise HTTPException(status_code=404, detail="Category not found")
-    
-    # Lấy tất cả category_ids, bao gồm subcategories nếu được yêu cầu
-    category_ids = [category_id]
-    
-    if include_subcategories:
-        # Lấy tất cả subcategories (trực tiếp và gián tiếp)
-        all_subcategories = []
+            print(f"Error creating category response: {e}")
+            # Fallback response
+            category_response = {
+                "category_id": 0,
+                "name": "Tất cả sản phẩm",
+                "description": "Hiển thị tất cả sản phẩm có sẵn",
+                "level": 0,
+                "parent_id": None
+            }
         
-        def get_subcategories(parent_id):
-            subcats = db.query(Category).filter(Category.parent_id == parent_id).all()
-            for subcat in subcats:
-                all_subcategories.append(subcat.category_id)
-                get_subcategories(subcat.category_id)  # Tìm tiếp các cấp con
+        # Xử lý sản phẩm và tạo response (sẽ được thực hiện ở cuối hàm)
+        category = None  # Đặt category = None để xử lý ở cuối
+        category_ids = []  # Không cần category_ids cho trường hợp "all"
         
-        get_subcategories(category_id)
-        category_ids.extend(all_subcategories)
+    else:
+        # Kiểm tra xem dữ liệu có trong cache không
+        cache_key = f"subcategory:{category_id}:products_simple:{include_subcategories}:page:{page}:limit:{limit}:sort:{sort_by}"
+        cached_result = await get_cache(cache_key)
+        if cached_result:
+            try:
+                return json.loads(cached_result)
+            except Exception as e:
+                print(f"Error deserializing cached products: {str(e)}")
+                # Tiếp tục xử lý nếu có lỗi khi parse cache
+        
+        # Kiểm tra xem category có tồn tại không
+        try:
+            category_id_int = int(category_id)
+            category = db.query(Category).filter(Category.category_id == category_id_int).first()
+            if not category:
+                raise HTTPException(status_code=404, detail="Category not found")
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid category ID format")
     
-    # Tạo query cơ bản
-    base_query = db.query(Product).filter(Product.category_id.in_(category_ids))
-    
-    # Đếm tổng số sản phẩm
-    total_products = base_query.count()
-    
-    # Tính tổng số trang
-    total_pages = (total_products + limit - 1) // limit
-    
-    # Áp dụng sắp xếp
-    if sort_by == "price_asc":
-        base_query = base_query.order_by(Product.price.asc())
-    elif sort_by == "price_desc":
-        base_query = base_query.order_by(Product.price.desc())
-    elif sort_by == "newest":
-        base_query = base_query.order_by(Product.created_at.desc())
-    else:  # Mặc định sắp xếp theo tên
-        base_query = base_query.order_by(Product.name.asc())
-    
-    # Áp dụng phân trang
-    products = base_query.offset(offset).limit(limit).all()
+        # Lấy tất cả category_ids, bao gồm subcategories nếu được yêu cầu
+        category_ids = [category_id_int]
+        
+        if include_subcategories:
+            # Lấy tất cả subcategories (trực tiếp và gián tiếp)
+            all_subcategories = []
+            
+            def get_subcategories(parent_id):
+                subcats = db.query(Category).filter(Category.parent_id == parent_id).all()
+                for subcat in subcats:
+                    all_subcategories.append(subcat.category_id)
+                    get_subcategories(subcat.category_id)  # Tìm tiếp các cấp con
+            
+            get_subcategories(category_id_int)
+            category_ids.extend(all_subcategories)
+        
+        # Tạo query cơ bản
+        base_query = db.query(Product).filter(Product.category_id.in_(category_ids))
+        
+        # Đếm tổng số sản phẩm
+        total_products = base_query.count()
+        
+        # Tính tổng số trang
+        total_pages = (total_products + limit - 1) // limit
+        
+        # Áp dụng sắp xếp
+        if sort_by == "price_asc":
+            base_query = base_query.order_by(Product.price.asc())
+        elif sort_by == "price_desc":
+            base_query = base_query.order_by(Product.price.desc())
+        elif sort_by == "created_at":
+            base_query = base_query.order_by(Product.created_at.desc())
+        elif sort_by == "name_asc":
+            base_query = base_query.order_by(Product.name.asc())
+        elif sort_by == "name_desc":
+            base_query = base_query.order_by(Product.name.desc())
+        else:  # Mặc định sắp xếp theo created_at
+            base_query = base_query.order_by(Product.created_at.desc())
+        
+        # Áp dụng phân trang
+        products = base_query.offset(offset).limit(limit).all()
+        
+        # Tạo category response cho category thực
+        category_response = CategoryResponse(
+            category_id=category.category_id,
+            name=category.name,
+            description=category.description,
+            level=category.level,
+            parent_id=category.parent_id
+        )
     
     # Tạo response với thông tin giảm giá
     result_products = []
@@ -665,14 +937,7 @@ async def get_products_by_subcategory(
         )
         result_products.append(product_data)
     
-    # Tạo response model
-    category_response = CategoryResponse(
-        category_id=category.category_id,
-        name=category.name,
-        description=category.description,
-        level=category.level,
-        parent_id=category.parent_id
-    )
+    # category_response đã được tạo ở trên cho cả hai trường hợp
     
     pagination = {
         "total_products": total_products,

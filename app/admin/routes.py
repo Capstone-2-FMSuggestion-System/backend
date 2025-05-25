@@ -7,7 +7,7 @@ from ..core.invalidation_helpers import invalidate_dashboard_cache
 from .models import User, Product, Category, Orders, Payments, Promotions
 from ..e_commerce.models import OrderItems
 from .schemas import ProductCreate, UserCreate, PromotionCreate, DashboardStats, RecentOrdersResponse, RevenueOverviewResponse, RecentOrder, RevenuePeriod, OrderUpdateRequest
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timedelta
 import calendar
 import json
@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..e_commerce.models import ProductImages
 from .. import admin
 from ..auth import authentication
+import hashlib
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -84,9 +85,24 @@ async def get_all_products(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """API cũ - Lấy danh sách tất cả sản phẩm với cache"""
     check_admin(current_user)
+    
+    # Cache key cho API cũ
+    cache_key = "admin:products:all:legacy"
+    
+    # Kiểm tra cache trước
+    try:
+        cached_data = await get_cache(cache_key)
+        if cached_data:
+            logger.info(f"Legacy products data retrieved from cache: {cache_key}")
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.warning(f"Error retrieving legacy products from cache: {str(e)}")
+    
+    # Nếu không có cache, truy vấn database
     products = db.query(Product).all()
-    return [
+    product_list = [
         {
             "product_id": product.product_id,
             "name": product.name,
@@ -97,6 +113,15 @@ async def get_all_products(
         }
         for product in products
     ]
+    
+    # Lưu vào cache với thời gian hết hạn 300 giây (5 phút)
+    try:
+        await set_cache(cache_key, json.dumps(product_list, default=str), expire=300)
+        logger.info(f"Legacy products data cached: {cache_key}")
+    except Exception as e:
+        logger.warning(f"Error saving legacy products to cache: {str(e)}")
+    
+    return product_list
 
 @router.post("/products", response_model=dict)
 async def create_product(
@@ -117,6 +142,10 @@ async def create_product(
     # Invalidate dashboard cache when a new product is created
     await invalidate_dashboard_cache()
     logger.info(f"Dashboard cache invalidated after creating product {new_product.product_id}")
+    
+    # Invalidate admin products cache
+    await invalidate_admin_products_cache()
+    logger.info(f"Admin products cache invalidated after creating product {new_product.product_id}")
     
     # Nếu sản phẩm được đánh dấu là nổi bật, xóa cache sản phẩm nổi bật
     if new_product.is_featured:
@@ -1430,20 +1459,55 @@ class PaginatedProductResponse(BaseModel):
 
 # API endpoint cho quản lý sản phẩm
 
+def generate_cache_key(prefix: str, **kwargs) -> str:
+    """Tạo cache key duy nhất dựa trên prefix và parameters"""
+    cache_data = json.dumps(kwargs, sort_keys=True, default=str)
+    hash_key = hashlib.md5(cache_data.encode()).hexdigest()
+    return f"{prefix}:{hash_key}"
+
+async def invalidate_admin_products_cache():
+    """Xóa tất cả cache liên quan đến admin products"""
+    try:
+        cache_keys = await redis_client.keys("admin:products:*")
+        if cache_keys:
+            await redis_client.delete(*cache_keys)
+        logger.info(f"Invalidated {len(cache_keys)} admin product cache keys")
+    except Exception as e:
+        logger.error(f"Error invalidating admin products cache: {str(e)}")
+
 @router.get("/manage/products", response_model=PaginatedProductResponse)
 async def get_all_admin_products(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
     category_id: Optional[int] = None,
     search: Optional[str] = None,
-    stock_status: Optional[str] = None,  # Thêm tham số lọc theo trạng thái tồn kho (available/unavailable)
+    stock_status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Lấy danh sách tất cả sản phẩm (chỉ admin)"""
+    """Lấy danh sách tất cả sản phẩm (chỉ admin) với cache"""
     check_admin(current_user)
     
-    # Truy vấn sản phẩm và join với bảng Category để lấy tên danh mục
+    # Tạo cache key dựa trên tất cả parameters
+    cache_key = generate_cache_key(
+        "admin:products:list",
+        skip=skip,
+        limit=limit,
+        category_id=category_id,
+        search=search,
+        stock_status=stock_status
+    )
+    
+    # Kiểm tra cache trước
+    try:
+        cached_data = await get_cache(cache_key)
+        if cached_data:
+            logger.info(f"Admin products data retrieved from cache with key: {cache_key}")
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.warning(f"Error retrieving from cache: {str(e)}")
+    
+    # Nếu không có cache, truy vấn database
     query = db.query(
         Product, 
         Category.name.label("category_name")
@@ -1452,34 +1516,25 @@ async def get_all_admin_products(
         Product.category_id == Category.category_id
     )
     
-    # Lọc theo danh mục
     if category_id:
         query = query.filter(Product.category_id == category_id)
     
-    # Tìm kiếm theo tên sản phẩm
     if search:
         query = query.filter(Product.name.ilike(f"%{search}%"))
     
-    # Lọc theo trạng thái tồn kho
     if stock_status:
         if stock_status.lower() == 'available':
             query = query.filter(Product.stock_quantity > 0)
         elif stock_status.lower() == 'unavailable':
             query = query.filter(Product.stock_quantity <= 0)
     
-    # Đếm tổng số sản phẩm
     total = query.count()
-    
-    # Phân trang
     results = query.offset(skip).limit(limit).all()
     
-    # Chuyển đổi dữ liệu để trả về định dạng mới
     product_list = []
     for product, category_name in results:
-        # Lấy danh sách image_urls thay vì toàn bộ đối tượng image
         image_urls = [img.image_url for img in product.images] if product.images else []
         
-        # Tạo đối tượng sản phẩm với định dạng mới
         product_dict = {
             "product_id": product.product_id,
             "name": product.name,
@@ -1490,18 +1545,27 @@ async def get_all_admin_products(
             "stock_quantity": product.stock_quantity,
             "is_featured": product.is_featured,
             "category_id": product.category_id,
-            "category_name": category_name or "N/A",  # Thêm tên danh mục
-            "created_at": product.created_at,
-            "image_urls": image_urls  # Thay thế trường images bằng image_urls
+            "category_name": category_name or "N/A",
+            "created_at": product.created_at.isoformat() if product.created_at else None,
+            "image_urls": image_urls
         }
         product_list.append(product_dict)
     
-    return {
+    response_data = {
         "items": product_list,
         "total": total,
         "skip": skip,
         "limit": limit
     }
+    
+    # Lưu vào cache với thời gian hết hạn 300 giây (5 phút)
+    try:
+        await set_cache(cache_key, json.dumps(response_data, default=str), expire=300)
+        logger.info(f"Admin products data cached with key: {cache_key}")
+    except Exception as e:
+        logger.warning(f"Error saving to cache: {str(e)}")
+    
+    return response_data
 
 @router.post("/manage/products", response_model=AdminProductResponse, status_code=201)
 async def create_admin_product(
@@ -1602,6 +1666,10 @@ async def create_admin_product(
             await invalidate_dashboard_cache()
             logger.info(f"Dashboard cache invalidated after creating product {db_product.product_id}")
             
+            # Invalidate admin products cache
+            await invalidate_admin_products_cache()
+            logger.info(f"Admin products cache invalidated after creating product {db_product.product_id}")
+            
             return response
             
         except Exception as commit_error:
@@ -1621,10 +1689,26 @@ async def get_admin_product(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Lấy thông tin chi tiết sản phẩm (chỉ admin)"""
+    """Lấy thông tin chi tiết sản phẩm (chỉ admin) với cache"""
     check_admin(current_user)
     
-    # Query sản phẩm và join với Category để lấy tên danh mục
+    # Tạo cache key cho sản phẩm cụ thể
+    cache_key = f"admin:products:detail:{product_id}"
+    
+    # Kiểm tra cache trước
+    try:
+        cached_data = await get_cache(cache_key)
+        if cached_data:
+            logger.info(f"Admin product detail retrieved from cache: {cache_key}")
+            cached_product = json.loads(cached_data)
+            # Convert string timestamps back to datetime objects for response model
+            if cached_product.get("created_at"):
+                cached_product["created_at"] = datetime.fromisoformat(cached_product["created_at"])
+            return cached_product
+    except Exception as e:
+        logger.warning(f"Error retrieving product from cache: {str(e)}")
+    
+    # Nếu không có cache, truy vấn database
     result = db.query(
         Product, 
         Category.name.label("category_name")
@@ -1640,10 +1724,8 @@ async def get_admin_product(
     
     product, category_name = result
     
-    # Lấy danh sách image_urls
     image_urls = [img.image_url for img in product.images] if product.images else []
     
-    # Tạo đối tượng sản phẩm với định dạng mới
     response = {
         "product_id": product.product_id,
         "name": product.name,
@@ -1654,11 +1736,33 @@ async def get_admin_product(
         "stock_quantity": product.stock_quantity,
         "is_featured": product.is_featured,
         "category_id": product.category_id,
-        "category_name": category_name or "N/A",  # Thêm tên danh mục
+        "category_name": category_name or "N/A",
         "created_at": product.created_at,
-        "image_urls": image_urls,  # Thêm mảng image_urls
-        "images": product.images  # Giữ lại trường images để tương thích ngược
+        "image_urls": image_urls,
+        "images": product.images
     }
+    
+    # Lưu vào cache với thời gian hết hạn 600 giây (10 phút)
+    try:
+        cache_data = {
+            **response,
+            "created_at": response["created_at"].isoformat() if response["created_at"] else None,
+            "images": [
+                {
+                    "image_id": img.image_id,
+                    "product_id": img.product_id,
+                    "image_url": img.image_url,
+                    "is_primary": img.is_primary,
+                    "display_order": img.display_order,
+                    "created_at": img.created_at.isoformat() if img.created_at else None
+                }
+                for img in response["images"]
+            ] if response["images"] else []
+        }
+        await set_cache(cache_key, json.dumps(cache_data, default=str), expire=600)
+        logger.info(f"Admin product detail cached: {cache_key}")
+    except Exception as e:
+        logger.warning(f"Error saving product to cache: {str(e)}")
     
     return response
 
@@ -1757,6 +1861,14 @@ async def update_admin_product(
             await redis_client.delete("products:featured:limit6")
             logger.info(f"Featured products cache invalidated after updating product {product_id} featured status from {previous_is_featured} to {is_featured}")
 
+        # Invalidate admin products cache
+        await invalidate_admin_products_cache()
+        logger.info(f"Admin products cache invalidated after updating product {product_id}")
+        
+        # Invalidate specific product detail cache
+        await redis_client.delete(f"admin:products:detail:{product_id}")
+        logger.info(f"Product detail cache invalidated for product {product_id}")
+
         # Lấy lại thông tin sản phẩm đã cập nhật
         updated_product = db.query(Product).filter(Product.product_id == product_id).first()
         return updated_product
@@ -1792,6 +1904,14 @@ async def delete_admin_product(
         # Invalidate dashboard cache when a product is deleted
         await invalidate_dashboard_cache()
         logger.info(f"Dashboard cache invalidated after deleting product {product_id}")
+        
+        # Invalidate admin products cache
+        await invalidate_admin_products_cache()
+        logger.info(f"Admin products cache invalidated after deleting product {product_id}")
+        
+        # Invalidate specific product detail cache
+        await redis_client.delete(f"admin:products:detail:{product_id}")
+        logger.info(f"Product detail cache invalidated for deleted product {product_id}")
         
         # Nếu sản phẩm đã xóa là sản phẩm nổi bật, xóa cache sản phẩm nổi bật
         if was_featured:
@@ -1838,6 +1958,12 @@ async def add_admin_product_image(
         db.add(db_image)
         db.commit()
         db.refresh(db_image)
+        
+        # Invalidate admin products cache when image is added
+        await invalidate_admin_products_cache()
+        await redis_client.delete(f"admin:products:detail:{product_id}")
+        logger.info(f"Product cache invalidated after adding image to product {product_id}")
+        
         return db_image
     except SQLAlchemyError as e:
         db.rollback()
@@ -1868,6 +1994,12 @@ async def delete_admin_product_image(
         # Xóa ảnh
         db.delete(db_image)
         db.commit()
+        
+        # Invalidate admin products cache when image is deleted
+        await invalidate_admin_products_cache()
+        await redis_client.delete(f"admin:products:detail:{product_id}")
+        logger.info(f"Product cache invalidated after deleting image from product {product_id}")
+        
         return None
     except SQLAlchemyError as e:
         db.rollback()
@@ -2285,4 +2417,24 @@ async def update_order(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Có lỗi xảy ra khi cập nhật đơn hàng: {str(e)}"
+        )
+
+@router.post("/manage/products/clear-cache", response_model=dict)
+async def clear_admin_products_cache(
+    current_user: User = Depends(get_current_user),
+):
+    """Xóa tất cả cache admin products (chỉ admin)"""
+    check_admin(current_user)
+    
+    try:
+        await invalidate_admin_products_cache()
+        return {
+            "status": "success",
+            "message": "Admin products cache đã được xóa thành công"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing admin products cache: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Lỗi khi xóa cache admin products"
         )
