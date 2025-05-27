@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any
 from .models import User
 from .schemas import UserCreate, UserUpdate, UserSearchFilter
 from ..core.security import hash_password
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 def get_user_by_username(db: Session, username: str) -> Optional[User]:
     """
@@ -171,10 +171,11 @@ def delete_user(db: Session, user_id: int) -> bool:
     Tên Function: delete_user
     
     1. Mô tả ngắn gọn:
-    Xóa người dùng khỏi hệ thống.
+    Xóa người dùng và tất cả dữ liệu liên quan khỏi hệ thống.
     
     2. Mô tả công dụng:
-    Xóa bản ghi người dùng khỏi cơ sở dữ liệu dựa trên ID.
+    Xóa bản ghi người dùng và tất cả dữ liệu liên quan khỏi cơ sở dữ liệu dựa trên ID.
+    Bao gồm xóa cart_items, favorite_menus, reviews, payments, order_items, và orders.
     Thường được sử dụng khi người dùng yêu cầu xóa tài khoản
     hoặc khi admin cần xóa tài khoản không hợp lệ.
     
@@ -185,13 +186,88 @@ def delete_user(db: Session, user_id: int) -> bool:
     4. Giá trị trả về:
     - bool: True nếu xóa thành công, False nếu không tìm thấy người dùng
     """
+    from ..e_commerce.models import CartItems, FavoriteMenus, Reviews, Orders, OrderItems
+    from ..payment.models import Payments
+    
     db_user = get_user(db, user_id)
     if not db_user:
         return False
     
-    db.delete(db_user)
-    db.commit()
-    return True
+    try:
+        # 1. Xóa cart_items của user
+        db.query(CartItems).filter(CartItems.user_id == user_id).delete()
+        
+        # 2. Xóa favorite_menus của user
+        db.query(FavoriteMenus).filter(FavoriteMenus.user_id == user_id).delete()
+        
+        # 3. Xóa reviews của user
+        db.query(Reviews).filter(Reviews.user_id == user_id).delete()
+        
+        # 4. Lấy tất cả orders của user để xóa payments và order_items
+        user_orders = db.query(Orders).filter(Orders.user_id == user_id).all()
+        order_ids = [order.order_id for order in user_orders]
+        
+        if order_ids:
+            # 5. Xóa payments liên quan đến orders của user
+            db.query(Payments).filter(Payments.order_id.in_(order_ids)).delete()
+            
+            # 6. Xóa order_items liên quan đến orders của user
+            db.query(OrderItems).filter(OrderItems.order_id.in_(order_ids)).delete()
+        
+        # 7. Xóa orders của user
+        db.query(Orders).filter(Orders.user_id == user_id).delete()
+        
+        # 8. Xóa các bảng khác có thể tham chiếu đến user_id (sử dụng raw SQL)
+        # Tạm thời tắt foreign key checks để xóa dữ liệu
+        try:
+            db.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+            
+            # Xóa tất cả các bảng có thể tham chiếu đến user_id
+            tables_to_clean = [
+                "health_data",
+                "conversations", 
+                "user_sessions",
+                "notifications",
+                "user_preferences",
+                "chat_messages",
+                "user_activities",
+                "user_logs"
+            ]
+            
+            for table in tables_to_clean:
+                try:
+                    if table == "health_data":
+                        # Xóa health_data thông qua conversations
+                        db.execute(text(f"""
+                            DELETE hd FROM {table} hd 
+                            INNER JOIN conversations c ON hd.conversation_id = c.conversation_id 
+                            WHERE c.user_id = :user_id
+                        """), {"user_id": user_id})
+                    else:
+                        # Xóa trực tiếp theo user_id
+                        db.execute(text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id})
+                except Exception as e:
+                    print(f"Warning: Could not delete from {table} table: {e}")
+            
+            # Bật lại foreign key checks
+            db.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            
+        except Exception as e:
+            print(f"Warning: Error in foreign key management: {e}")
+            # Đảm bảo bật lại foreign key checks
+            try:
+                db.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            except:
+                pass
+        
+        # 9. Cuối cùng xóa user
+        db.delete(db_user)
+        db.commit()
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        raise e
 
 def get_users(db: Session, skip: int = 0, limit: int = 100):
     """

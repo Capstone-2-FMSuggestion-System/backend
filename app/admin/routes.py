@@ -927,7 +927,7 @@ async def delete_user_admin(
     db: Session = Depends(get_db)
 ):
     """
-    Xóa người dùng khỏi hệ thống.
+    Xóa người dùng và tất cả dữ liệu liên quan khỏi hệ thống.
     Chỉ admin mới có quyền truy cập API này.
     
     Args:
@@ -944,31 +944,51 @@ async def delete_user_admin(
     if user_id == current_user.user_id:
         raise HTTPException(status_code=400, detail="Không thể xóa tài khoản đang sử dụng")
     
-    # Xóa người dùng
-    result = delete_user(db, user_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Người dùng không tồn tại")
-    
-    # Xóa cache người dùng cụ thể
-    await redis_client.delete(f"admin:user:{user_id}")
-    
-    # Xóa cache danh sách người dùng để đảm bảo lần truy vấn tiếp theo sẽ lấy dữ liệu mới
-    # Sử dụng pattern để xóa tất cả các key liên quan
-    pattern = "admin:users:*"
-    cursor = 0
-    
-    # Tìm và xóa tất cả các key theo pattern
-    while True:
-        cursor, keys = await redis_client.scan(cursor=cursor, match=pattern, count=100)
-        if keys:
-            await redis_client.delete(*keys)
-        if cursor == 0:
-            break
-    
-    # Ghi log
-    logger.info(f"User {user_id} deleted by admin {current_user.user_id}, cache updated")
-    
-    return {"message": "Người dùng đã được xóa thành công"}
+    try:
+        # Xóa người dùng và tất cả dữ liệu liên quan
+        result = delete_user(db, user_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Người dùng không tồn tại")
+        
+        # Xóa cache người dùng cụ thể
+        await redis_client.delete(f"admin:user:{user_id}")
+        
+        # Xóa cache danh sách người dùng để đảm bảo lần truy vấn tiếp theo sẽ lấy dữ liệu mới
+        # Sử dụng pattern để xóa tất cả các key liên quan
+        pattern = "admin:users:*"
+        cursor = 0
+        
+        # Tìm và xóa tất cả các key theo pattern
+        while True:
+            cursor, keys = await redis_client.scan(cursor=cursor, match=pattern, count=100)
+            if keys:
+                await redis_client.delete(*keys)
+            if cursor == 0:
+                break
+        
+        # Ghi log
+        logger.info(f"User {user_id} and all related data deleted by admin {current_user.user_id}, cache updated")
+        
+        return {"message": "Người dùng và tất cả dữ liệu liên quan đã được xóa thành công"}
+        
+    except Exception as e:
+        logger.error(f"Error deleting user {user_id}: {str(e)}")
+        # Xử lý các loại lỗi cụ thể
+        if "foreign key constraint" in str(e).lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="Không thể xóa người dùng do có dữ liệu liên quan. Vui lòng liên hệ quản trị viên."
+            )
+        elif "integrity" in str(e).lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Không thể xóa người dùng do ràng buộc dữ liệu. Vui lòng thử lại sau."
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Đã xảy ra lỗi khi xóa người dùng. Vui lòng thử lại sau."
+            )
 
 @router.post("/dashboard/invalidate-cache", response_model=dict)
 async def manual_invalidate_dashboard_cache(
